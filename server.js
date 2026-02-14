@@ -10,32 +10,49 @@ import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ✅ Load .env from the current directory (project root)
-const envPath = path.join(__dirname, '.env');
-console.log('📁 Looking for .env at:', envPath);
+// ✅ Load environment variables - Check Render environment first, then fall back to .env file
+const isProduction = process.env.NODE_ENV === 'production';
 
-if (fs.existsSync(envPath)) {
-  console.log('✅ Found .env file');
-  dotenv.config({ path: envPath });
-  
-  // Display loaded variables (without sensitive values)
-  console.log('📄 Environment variables loaded:');
-  const envContent = fs.readFileSync(envPath, 'utf8');
-  envContent.split('\n').forEach(line => {
-    if (line.trim() && !line.startsWith('#')) {
-      const [key] = line.split('=');
-      if (!key.includes('KEY') && !key.includes('SECRET') && !key.includes('PASSPHRASE')) {
-        console.log(`   ${key}=${process.env[key]}`);
-      } else {
-        console.log(`   ${key}=[HIDDEN]`);
-      }
-    }
-  });
+if (!isProduction) {
+  // Only try to load .env file in development
+  const envPath = path.join(__dirname, '.env');
+  console.log('📁 Looking for .env at:', envPath);
+
+  if (fs.existsSync(envPath)) {
+    console.log('✅ Found .env file');
+    dotenv.config({ path: envPath });
+  } else {
+    console.log('⚠️ No .env file found, using environment variables');
+  }
 } else {
-  console.error('❌ .env file not found at:', envPath);
-  console.error('Please create .env file in the same directory as server.js');
-  process.exit(1);
+  console.log('📁 Production mode: Using environment variables from Render dashboard');
 }
+
+// Display loaded variables (without sensitive values)
+console.log('📄 Environment variables loaded:');
+const envVars = [
+  'VITE_SUPABASE_URL',
+  'SUPABASE_SERVICE_KEY',
+  'PAYFAST_MERCHANT_ID',
+  'PAYFAST_MERCHANT_KEY',
+  'PAYFAST_PASSPHRASE',
+  'PAYFAST_BASE_URL',
+  'APP_BASE_URL',
+  'VITE_BACKEND_URL',
+  'CONTACT_EMAIL'
+];
+
+envVars.forEach(key => {
+  if (process.env[key]) {
+    if (key.includes('KEY') || key.includes('SECRET') || key.includes('PASSPHRASE')) {
+      console.log(`   ${key}=[HIDDEN]`);
+    } else {
+      console.log(`   ${key}=${process.env[key]}`);
+    }
+  } else {
+    console.log(`   ⚠️ ${key} not set`);
+  }
+});
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 4242;
@@ -56,8 +73,15 @@ const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
 if (missingEnvVars.length > 0) {
   console.error('❌ Missing required environment variables:');
   missingEnvVars.forEach(varName => console.error(`   - ${varName}`));
-  console.error('\nPlease check your .env file');
-  process.exit(1);
+  
+  if (isProduction) {
+    console.error('\nPlease add these environment variables in your Render dashboard:');
+    console.error('https://dashboard.render.com');
+    process.exit(1);
+  } else {
+    console.error('\nPlease create a .env file with these variables');
+    process.exit(1);
+  }
 }
 
 console.log('✅ All required environment variables found');
@@ -551,10 +575,9 @@ app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) 
 // ============ SERVE FRONTEND STATIC FILES ============
 // ✅ This is critical for production - serves your built React app
 
-// Check if we're in production
-const isProduction = process.env.NODE_ENV === 'production';
 const distPath = path.join(__dirname, 'dist');
 
+// isProduction is already defined at the top of the file
 if (isProduction) {
   console.log(`\n📦 Production mode: Serving static files from ${distPath}`);
   
