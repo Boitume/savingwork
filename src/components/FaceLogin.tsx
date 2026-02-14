@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Camera, LogIn } from 'lucide-react';
 import { loadModels, detectFace, calculateDistance } from '../lib/faceRecognition';
 import { supabase, User } from '../lib/supabase';
+import { useTheme } from '../context/ThemeContext';
 
 interface FaceLoginProps {
   onSuccess: (user: User) => void;
@@ -10,6 +11,7 @@ interface FaceLoginProps {
 const RECOGNITION_THRESHOLD = 0.6;
 
 export default function FaceLogin({ onSuccess }: FaceLoginProps) {
+  const { theme } = useTheme();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [status, setStatus] = useState('');
@@ -100,24 +102,35 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
         setIsScanning(false);
       }
     } catch (err) {
+      console.error('Login error:', err);
       setError('Login failed. Please try again.');
       setIsScanning(false);
     }
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto bg-white rounded-lg shadow-lg p-8">
+    <div className={`w-full max-w-2xl mx-auto rounded-lg shadow-lg p-8 transition-colors duration-300 ${
+      theme === 'dark' ? 'bg-gray-800' : 'bg-white'
+    }`}>
       <div className="flex items-center gap-3 mb-6">
-        <LogIn className="w-8 h-8 text-green-600" />
-        <h2 className="text-2xl font-bold text-gray-800">Face Recognition Login</h2>
+        <LogIn className={`w-8 h-8 ${
+          theme === 'dark' ? 'text-green-400' : 'text-green-600'
+        }`} />
+        <h2 className={`text-2xl font-bold ${
+          theme === 'dark' ? 'text-white' : 'text-gray-800'
+        }`}>
+          Face Recognition Login
+        </h2>
       </div>
 
       <div className="space-y-6">
+        {/* Camera Feed */}
         <div className="relative bg-gray-900 rounded-lg overflow-hidden">
           <video
             ref={videoRef}
             autoPlay
             muted
+            playsInline
             className="w-full h-auto"
           />
           <div className="absolute top-4 left-4">
@@ -126,27 +139,72 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
               <span className="text-white text-sm">Camera Active</span>
             </div>
           </div>
+          
+          {/* Scanning Overlay */}
+          {isScanning && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-64 h-64 border-4 border-green-500 rounded-lg animate-pulse"></div>
+            </div>
+          )}
         </div>
 
+        {/* Status Message */}
         {status && (
-          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
-            {status}
+          <div className={`border px-4 py-3 rounded-lg transition-colors duration-300 ${
+            theme === 'dark'
+              ? 'bg-green-900/20 border-green-800 text-green-300'
+              : 'bg-green-50 border-green-200 text-green-700'
+          }`}>
+            <div className="flex items-center gap-2">
+              {isScanning && (
+                <svg className="animate-spin h-4 w-4 text-green-600 dark:text-green-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              )}
+              <span>{status}</span>
+            </div>
           </div>
         )}
 
+        {/* Error Message */}
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+          <div className={`border px-4 py-3 rounded-lg transition-colors duration-300 ${
+            theme === 'dark'
+              ? 'bg-red-900/20 border-red-800 text-red-300'
+              : 'bg-red-50 border-red-200 text-red-700'
+          }`}>
             {error}
           </div>
         )}
 
+        {/* Login Button */}
         <button
           onClick={handleLogin}
           disabled={isScanning}
-          className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-medium py-3 px-6 rounded-lg transition-colors duration-200"
+          className={`w-full py-3 px-6 rounded-lg text-white font-medium transition-all duration-200 flex items-center justify-center gap-2 ${
+            isScanning 
+              ? 'bg-gray-400 cursor-not-allowed' 
+              : 'bg-green-600 hover:bg-green-700 hover:scale-105'
+          }`}
         >
+          <LogIn className="w-5 h-5" />
           {isScanning ? 'Scanning...' : 'Login with Face'}
         </button>
+
+        {/* Privacy Note */}
+        <p className={`text-xs text-center ${
+          theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+        }`}>
+          Your face is processed locally and never leaves your device
+        </p>
+
+        {/* Recognition Threshold Info */}
+        <div className={`text-xs text-center ${
+          theme === 'dark' ? 'text-gray-500' : 'text-gray-400'
+        }`}>
+          Recognition threshold: {RECOGNITION_THRESHOLD * 100}% match required
+        </div>
       </div>
     </div>
   );

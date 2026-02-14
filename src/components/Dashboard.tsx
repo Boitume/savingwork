@@ -1,10 +1,12 @@
-import { LogOut, User as UserIcon, Wallet, CreditCard, Users } from 'lucide-react';
+import { LogOut, User as UserIcon, Wallet, CreditCard, Users, Moon, Sun } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [loading, setLoading] = useState(false);
   const [amount, setAmount] = useState<number | ''>('');
   const [balance, setBalance] = useState<number | null>(null);
@@ -301,13 +303,13 @@ export default function Dashboard() {
   // Show API status warning if offline
   if (apiStatus === 'offline') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-green-50 flex items-center justify-center">
-        <div className="bg-white rounded-xl shadow-lg p-8 max-w-md text-center">
-          <h2 className="text-2xl font-bold text-red-600 mb-4">Backend Unavailable</h2>
-          <p className="text-gray-600 mb-4">
-            Cannot connect to the backend API at <code className="bg-gray-100 px-2 py-1 rounded">{backendUrl}</code>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-green-50 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8 max-w-md text-center">
+          <h2 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">Backend Unavailable</h2>
+          <p className="text-gray-600 dark:text-gray-300 mb-4">
+            Cannot connect to the backend API at <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">{backendUrl}</code>
           </p>
-          <p className="text-gray-600 mb-6">
+          <p className="text-gray-600 dark:text-gray-300 mb-6">
             Please ensure the backend server is running and accessible.
           </p>
           <button
@@ -322,19 +324,40 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-green-50">
-      <nav className="bg-white shadow-lg">
+    <div className={`min-h-screen transition-colors duration-300 ${
+      theme === 'dark' 
+        ? 'dark bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900' 
+        : 'bg-gradient-to-br from-blue-50 to-green-50'
+    }`}>
+      <nav className={`${
+        theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white'
+      } shadow-lg transition-colors duration-300`}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-4">
-            <h1 className="text-2xl font-bold text-gray-800">
+            <h1 className={`text-2xl font-bold ${
+              theme === 'dark' ? 'text-white' : 'text-gray-800'
+            }`}>
               Face Recognition App
             </h1>
             <div className="flex items-center gap-4">
+              {/* Theme Toggle Button */}
+              <button
+                onClick={toggleTheme}
+                className={`p-2 rounded-lg transition-colors duration-200 ${
+                  theme === 'dark' 
+                    ? 'bg-gray-700 text-yellow-400 hover:bg-gray-600' 
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+                aria-label="Toggle theme"
+              >
+                {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+              </button>
+
               {apiStatus === 'checking' && (
-                <span className="text-sm text-yellow-600">Connecting...</span>
+                <span className="text-sm text-yellow-600 dark:text-yellow-400">Connecting...</span>
               )}
               {apiStatus === 'online' && (
-                <span className="text-sm text-green-600">● Online</span>
+                <span className="text-sm text-green-600 dark:text-green-400">● Online</span>
               )}
               <button
                 onClick={logout}
@@ -349,43 +372,67 @@ export default function Dashboard() {
 
       <div className="max-w-4xl mx-auto px-4 py-12">
         {/* Welcome Card */}
-        <div className="bg-white rounded-2xl shadow-xl p-8 text-center">
-          <h2 className="text-3xl font-bold text-gray-800">
+        <div className={`${
+          theme === 'dark' ? 'bg-gray-800' : 'bg-white'
+        } rounded-2xl shadow-xl p-8 text-center transition-colors duration-300`}>
+          <h2 className={`text-3xl font-bold ${
+            theme === 'dark' ? 'text-white' : 'text-gray-800'
+          }`}>
             Welcome, {user?.username || 'User'}! 👋
           </h2>
-          <p className="text-gray-600 mt-2">
-            User ID: <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">{user?.id}</span>
+          <p className={`mt-2 ${
+            theme === 'dark' ? 'text-gray-300' : 'text-gray-600'
+          }`}>
+            User ID: <span className={`font-mono text-sm px-2 py-1 rounded ${
+              theme === 'dark' ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600'
+            }`}>{user?.id}</span>
           </p>
         </div>
 
         {/* Dashboard Grid */}
         <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
           {/* Balance Card */}
-          <div className="bg-white rounded-xl shadow-lg p-6 text-center transform hover:scale-105 transition-all duration-300">
-            <Wallet className="w-12 h-12 text-blue-600 mx-auto" />
-            <div className="text-2xl font-bold text-blue-600 mt-3">
+          <div className={`${
+            theme === 'dark' ? 'bg-gray-800 hover:bg-gray-750' : 'bg-white hover:shadow-xl'
+          } rounded-xl shadow-lg p-6 text-center transform hover:scale-105 transition-all duration-300`}>
+            <Wallet className={`w-12 h-12 mx-auto ${
+              theme === 'dark' ? 'text-blue-400' : 'text-blue-600'
+            }`} />
+            <div className={`text-2xl font-bold mt-3 ${
+              theme === 'dark' ? 'text-blue-400' : 'text-blue-600'
+            }`}>
               Your Balance
             </div>
-            <p className="text-3xl font-bold text-gray-800 mt-2">
+            <p className={`text-3xl font-bold mt-2 ${
+              theme === 'dark' ? 'text-white' : 'text-gray-800'
+            }`}>
               {formatCurrency(balance ?? 0)}
             </p>
             {lastPayment && (
-              <p className="text-xs text-green-600 mt-1 animate-pulse">
+              <p className="text-xs text-green-600 dark:text-green-400 mt-1 animate-pulse">
                 +{formatCurrency(lastPayment.amount)} added
               </p>
             )}
           </div>
 
           {/* Payment Card */}
-          <div className="bg-white rounded-xl shadow-lg p-6 text-center transform hover:scale-105 transition-all duration-300">
-            <CreditCard className="w-12 h-12 text-green-600 mx-auto" />
-            <div className="text-2xl font-bold text-green-600 mt-3">
+          <div className={`${
+            theme === 'dark' ? 'bg-gray-800 hover:bg-gray-750' : 'bg-white hover:shadow-xl'
+          } rounded-xl shadow-lg p-6 text-center transform hover:scale-105 transition-all duration-300`}>
+            <CreditCard className={`w-12 h-12 mx-auto ${
+              theme === 'dark' ? 'text-green-400' : 'text-green-600'
+            }`} />
+            <div className={`text-2xl font-bold mt-3 ${
+              theme === 'dark' ? 'text-green-400' : 'text-green-600'
+            }`}>
               Make a Deposit
             </div>
             
             <div className="mt-4">
               <div className="flex items-center justify-center gap-2 mb-3">
-                <span className="text-2xl font-bold text-gray-700">R</span>
+                <span className={`text-2xl font-bold ${
+                  theme === 'dark' ? 'text-gray-300' : 'text-gray-700'
+                }`}>R</span>
                 <input
                   type="number"
                   value={amount}
@@ -393,12 +440,16 @@ export default function Dashboard() {
                   min="5"
                   max="10000"
                   step="1"
-                  className="w-32 text-center text-2xl font-bold px-4 py-2 border-2 border-green-200 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  className={`w-32 text-center text-2xl font-bold px-4 py-2 border-2 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent ${
+                    theme === 'dark' 
+                      ? 'bg-gray-700 border-gray-600 text-white' 
+                      : 'bg-white border-green-200 text-gray-900'
+                  }`}
                   placeholder="Amount"
                 />
               </div>
               
-              {/* Quick amount buttons - Starting from R5 */}
+              {/* Quick amount buttons */}
               <div className="grid grid-cols-4 gap-2 mb-2">
                 {[5, 10, 15, 20].map((preset) => (
                   <button
@@ -407,7 +458,9 @@ export default function Dashboard() {
                     className={`py-2 px-3 rounded-lg text-sm font-semibold transition-all ${
                       amount === preset 
                         ? 'bg-green-600 text-white' 
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        : theme === 'dark'
+                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     }`}
                   >
                     R {preset}
@@ -422,7 +475,9 @@ export default function Dashboard() {
                     className={`py-2 px-3 rounded-lg text-sm font-semibold transition-all ${
                       amount === preset 
                         ? 'bg-green-600 text-white' 
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        : theme === 'dark'
+                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     }`}
                   >
                     R {preset}
@@ -437,7 +492,9 @@ export default function Dashboard() {
                     className={`py-2 px-3 rounded-lg text-sm font-semibold transition-all ${
                       amount === preset 
                         ? 'bg-green-600 text-white' 
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        : theme === 'dark'
+                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     }`}
                   >
                     R {preset}
@@ -452,7 +509,9 @@ export default function Dashboard() {
                     className={`py-2 px-3 rounded-lg text-sm font-semibold transition-all ${
                       amount === preset 
                         ? 'bg-green-600 text-white' 
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        : theme === 'dark'
+                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     }`}
                   >
                     R {preset}
@@ -462,10 +521,12 @@ export default function Dashboard() {
               
               {/* Amount validation message */}
               {amountError && (
-                <p className="text-xs text-red-500 mb-2">{amountError}</p>
+                <p className="text-xs text-red-500 dark:text-red-400 mb-2">{amountError}</p>
               )}
               
-              <p className="text-xs text-gray-500">Min: R5 | Max: R10,000</p>
+              <p className={`text-xs ${
+                theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+              }`}>Min: R5 | Max: R10,000</p>
             </div>
 
             <button
@@ -492,57 +553,89 @@ export default function Dashboard() {
           </div>
 
           {/* Community Card */}
-          <div className="bg-white rounded-xl shadow-lg p-6 text-center transform hover:scale-105 transition-all duration-300">
-            <Users className="w-12 h-12 text-orange-600 mx-auto" />
-            <div className="text-2xl font-bold text-orange-600 mt-3">
+          <div className={`${
+            theme === 'dark' ? 'bg-gray-800 hover:bg-gray-750' : 'bg-white hover:shadow-xl'
+          } rounded-xl shadow-lg p-6 text-center transform hover:scale-105 transition-all duration-300`}>
+            <Users className={`w-12 h-12 mx-auto ${
+              theme === 'dark' ? 'text-orange-400' : 'text-orange-600'
+            }`} />
+            <div className={`text-2xl font-bold mt-3 ${
+              theme === 'dark' ? 'text-orange-400' : 'text-orange-600'
+            }`}>
               Community Balance
             </div>
-            <p className="text-4xl font-bold text-gray-800 mt-2">
+            <p className={`text-4xl font-bold mt-2 ${
+              theme === 'dark' ? 'text-white' : 'text-gray-800'
+            }`}>
               {formatCurrency(communityBalance)}
             </p>
-            <p className="text-sm text-gray-600 mt-2">Total savings across all users</p>
+            <p className={`text-sm mt-2 ${
+              theme === 'dark' ? 'text-gray-400' : 'text-gray-600'
+            }`}>Total savings across all users</p>
           </div>
         </div>
 
         {/* Recent Transactions */}
-        <div className="mt-8 bg-white rounded-xl shadow-lg p-6">
-          <h3 className="text-xl font-bold text-gray-800 mb-4">Recent Transactions</h3>
+        <div className={`mt-8 ${
+          theme === 'dark' ? 'bg-gray-800' : 'bg-white'
+        } rounded-xl shadow-lg p-6 transition-colors duration-300`}>
+          <h3 className={`text-xl font-bold mb-4 ${
+            theme === 'dark' ? 'text-white' : 'text-gray-800'
+          }`}>Recent Transactions</h3>
           <div className="space-y-3">
             {recentTransactions.length > 0 ? (
               recentTransactions.map((tx, index) => (
-                <div key={index} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                <div key={index} className={`flex justify-between items-center p-3 rounded-lg ${
+                  theme === 'dark' ? 'bg-gray-700' : 'bg-gray-50'
+                }`}>
                   <div>
-                    <p className="font-semibold">Deposit</p>
-                    <p className="text-sm text-gray-600">
+                    <p className={`font-semibold ${
+                      theme === 'dark' ? 'text-white' : 'text-gray-800'
+                    }`}>Deposit</p>
+                    <p className={`text-sm ${
+                      theme === 'dark' ? 'text-gray-400' : 'text-gray-600'
+                    }`}>
                       {new Date(tx.created_at).toLocaleDateString()}
                     </p>
                   </div>
-                  <p className="text-green-600 font-bold">+ {formatCurrency(tx.amount)}</p>
+                  <p className="text-green-600 dark:text-green-400 font-bold">+ {formatCurrency(tx.amount)}</p>
                 </div>
               ))
             ) : (
-              <p className="text-gray-500 text-center py-4">No transactions yet</p>
+              <p className={`text-center py-4 ${
+                theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+              }`}>No transactions yet</p>
             )}
           </div>
         </div>
 
         {/* Debug Info Panel */}
-        <div className="mt-8 p-4 bg-gray-100 rounded-lg border border-gray-200">
-          <h3 className="font-bold text-gray-700 mb-2">🔧 Debug Information:</h3>
+        <div className={`mt-8 p-4 rounded-lg border ${
+          theme === 'dark' 
+            ? 'bg-gray-800 border-gray-700 text-gray-300' 
+            : 'bg-gray-100 border-gray-200 text-gray-600'
+        }`}>
+          <h3 className={`font-bold mb-2 ${
+            theme === 'dark' ? 'text-white' : 'text-gray-700'
+          }`}>🔧 Debug Information:</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
             <div>
               <span className="font-semibold">Backend URL:</span>{' '}
-              <code className="bg-white px-2 py-1 rounded">{backendUrl}</code>
+              <code className={`px-2 py-1 rounded ${
+                theme === 'dark' ? 'bg-gray-700' : 'bg-white'
+              }`}>{backendUrl}</code>
             </div>
             <div>
               <span className="font-semibold">API Status:</span>{' '}
-              <span className={apiStatus === 'online' ? 'text-green-600' : 'text-red-600'}>
+              <span className={apiStatus === 'online' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
                 {apiStatus}
               </span>
             </div>
             <div>
               <span className="font-semibold">User ID:</span>{' '}
-              <code className="bg-white px-2 py-1 rounded">{user?.id || 'Not logged in'}</code>
+              <code className={`px-2 py-1 rounded ${
+                theme === 'dark' ? 'bg-gray-700' : 'bg-white'
+              }`}>{user?.id || 'Not logged in'}</code>
             </div>
             <div>
               <span className="font-semibold">Username:</span>{' '}
@@ -550,11 +643,11 @@ export default function Dashboard() {
             </div>
             <div>
               <span className="font-semibold">Your Balance:</span>{' '}
-              <span className="font-bold text-green-600">{formatCurrency(balance ?? 0)}</span>
+              <span className="font-bold text-green-600 dark:text-green-400">{formatCurrency(balance ?? 0)}</span>
             </div>
             <div>
               <span className="font-semibold">Community Total:</span>{' '}
-              <span className="font-bold text-orange-600">{formatCurrency(communityBalance)}</span>
+              <span className="font-bold text-orange-600 dark:text-orange-400">{formatCurrency(communityBalance)}</span>
             </div>
           </div>
           <div className="flex gap-2 mt-3">
