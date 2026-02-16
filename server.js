@@ -500,14 +500,13 @@ app.get("/api/payfast/test-payment", (req, res) => {
   }
 });
 
-// ✅ ENHANCED PAYFAST WEBHOOK (Notify URL) - WITH FULL DEBUGGING
+// ============ ENHANCED WEBHOOK - WITH PROPER PAYMENTS HANDLING ============
 app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) => {
   try {
     console.log("\n" + "=".repeat(60));
     console.log("📨 WEBHOOK RECEIVED - START");
     console.log("=".repeat(60));
     console.log("📝 Raw body:", req.body);
-    console.log("📝 Headers:", JSON.stringify(req.headers, null, 2));
 
     // Parse the raw body into parameters
     let params;
@@ -563,7 +562,7 @@ app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) 
       // Check if user exists first
       const { data: user, error: userError } = await supabase
         .from('users')
-        .select('id, balance')
+        .select('id, balance, username')
         .eq('id', userId)
         .single();
 
@@ -572,39 +571,39 @@ app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) 
         return res.status(400).send("User not found");
       }
 
-      console.log(`   Current balance: R${user.balance || 0}`);
+      console.log(`👤 User found: ${user.username}, Current balance: R${user.balance || 0}`);
 
-      // Update user balance using RPC
-      console.log("🔄 Calling increment_balance RPC...");
-      const { data: rpcData, error: rpcError } = await supabase
+      // Update user balance
+      console.log("🔄 Updating user balance...");
+      const { error: balanceError } = await supabase
         .rpc("increment_balance", {
           user_id_input: userId,
           amount_input: amount
         });
 
-      if (rpcError) {
-        console.error("❌ RPC Error:", rpcError);
+      if (balanceError) {
+        console.error("❌ Balance update error:", balanceError);
         
-        // Fallback: Try direct update if RPC fails
-        console.log("🔄 Attempting direct update as fallback...");
-        const { data: updateData, error: updateError } = await supabase
+        // Fallback: Direct update
+        console.log("🔄 Trying direct update...");
+        const newBalance = (user.balance || 0) + amount;
+        const { error: directError } = await supabase
           .from('users')
-          .update({ balance: user.balance + amount })
-          .eq('id', userId)
-          .select();
+          .update({ balance: newBalance })
+          .eq('id', userId);
 
-        if (updateError) {
-          console.error("❌ Direct update also failed:", updateError);
+        if (directError) {
+          console.error("❌ Direct update failed:", directError);
           return res.status(500).send("Failed to update balance");
         } else {
-          console.log("✅ Direct update succeeded:", updateData);
+          console.log("✅ Direct update succeeded");
         }
       } else {
-        console.log("✅ RPC succeeded:", rpcData);
+        console.log("✅ Balance updated via RPC");
       }
 
       // Get updated balance
-      const { data: updatedUser, error: fetchError } = await supabase
+      const { data: updatedUser } = await supabase
         .from('users')
         .select('balance')
         .eq('id', userId)
@@ -612,43 +611,78 @@ app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) 
 
       console.log(`💰 New balance: R${updatedUser?.balance || 0}`);
 
+      // Handle payments table - UPSERT (update if exists, insert if not)
+      console.log("🔄 Handling payments record...");
+      
+      // Check if payment already exists
+      const { data: existingPayment, error: findError } = await supabase
+        .from("payments")
+        .select("id, status")
+        .eq("payment_id", paymentId)
+        .maybeSingle();
+
+      if (findError) {
+        console.error("❌ Error checking existing payment:", findError);
+      }
+
+      if (existingPayment) {
+        // Update existing payment
+        console.log("📝 Updating existing payment record");
+        const { error: updateError } = await supabase
+          .from("payments")
+          .update({ 
+            status: "completed",
+            completed_at: new Date().toISOString(),
+            transaction_id: pfPaymentId
+          })
+          .eq("payment_id", paymentId);
+
+        if (updateError) {
+          console.error("❌ Payment update error:", updateError);
+        } else {
+          console.log("✅ Payment status updated to completed");
+        }
+      } else {
+        // Insert new payment
+        console.log("📝 Inserting new payment record");
+        const { error: insertError } = await supabase
+          .from("payments")
+          .insert([{
+            payment_id: paymentId,
+            user_id: userId,
+            amount: amount,
+            status: "completed",
+            transaction_id: pfPaymentId,
+            completed_at: new Date().toISOString(),
+            created_at: new Date().toISOString()
+          }]);
+
+        if (insertError) {
+          console.error("❌ Payment insert error:", insertError);
+        } else {
+          console.log("✅ Payment record inserted");
+        }
+      }
+
       // Record transaction
       console.log("🔄 Recording transaction...");
-      const { data: transactionData, error: transactionError } = await supabase
+      const { error: transactionError } = await supabase
         .from("transactions")
         .insert([{
           user_id: userId,
           amount: amount,
           type: "deposit",
+          provider: "payfast",
           status: "completed",
           payment_id: paymentId,
           reference: pfPaymentId,
           created_at: new Date().toISOString()
-        }])
-        .select();
+        }]);
 
       if (transactionError) {
         console.error("❌ Transaction error:", transactionError);
       } else {
-        console.log("✅ Transaction recorded:", transactionData);
-      }
-
-      // Update payment status
-      console.log("🔄 Updating payment record...");
-      const { data: paymentData, error: paymentError } = await supabase
-        .from("payments")
-        .update({ 
-          status: "completed",
-          completed_at: new Date().toISOString(),
-          transaction_id: pfPaymentId
-        })
-        .eq("payment_id", paymentId)
-        .select();
-
-      if (paymentError) {
-        console.error("❌ Payment update error:", paymentError);
-      } else {
-        console.log("✅ Payment updated:", paymentData);
+        console.log("✅ Transaction recorded");
       }
 
       console.log(`🎉 Payment completed successfully for user ${userId}: R${amount}`);
@@ -665,91 +699,117 @@ app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) 
   }
 });
 
-// ✅ DIAGNOSTIC ENDPOINT - Check Supabase connection and RPC function
-app.get("/api/diagnostic", async (req, res) => {
+// ============ SIMPLIFIED WEBHOOK - DIRECT UPDATES ============
+app.post("/api/payfast/notify-simple", express.text({ type: "*/*" }), async (req, res) => {
   try {
-    console.log("\n🔧 DIAGNOSTIC CHECK");
+    console.log("\n" + "=".repeat(60));
+    console.log("📨 SIMPLE WEBHOOK RECEIVED");
     console.log("=".repeat(60));
-    
-    const results = {
-      server: {
-        time: new Date().toISOString(),
-        node_version: process.version,
-        environment: isProduction ? 'production' : 'development'
-      },
-      supabase: {
-        connected: false,
-        tables: {},
-        rpc_function: null
-      },
-      payfast: {
-        configured: !!process.env.PAYFAST_MERCHANT_ID,
-        merchant_id: process.env.PAYFAST_MERCHANT_ID,
-        base_url: process.env.PAYFAST_BASE_URL
+    console.log("Raw body:", req.body);
+
+    // Parse the raw body into parameters
+    const params = Object.fromEntries(
+      req.body.split("&").map(pair => {
+        const [key, value] = pair.split("=");
+        return [key, decodeURIComponent(value || "")];
+      })
+    );
+
+    console.log("Parsed params:", JSON.stringify(params, null, 2));
+
+    if (params.payment_status === "COMPLETE") {
+      const userId = params.custom_str1 || params.custom_int1;
+      const amount = parseFloat(params.amount_gross || params.amount);
+      const paymentId = params.m_payment_id;
+      const pfPaymentId = params.pf_payment_id;
+
+      console.log(`💰 Processing payment: User ${userId}, Amount R${amount}`);
+
+      if (!userId || !amount) {
+        console.error("❌ Missing userId or amount");
+        return res.status(400).send("Missing data");
       }
-    };
 
-    // Test Supabase connection
-    console.log("📊 Testing Supabase connection...");
-    const { data: users, error: usersError } = await supabase
-      .from('users')
-      .select('count', { count: 'exact', head: true });
+      // Get current user balance
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('balance')
+        .eq('id', userId)
+        .single();
 
-    results.supabase.connected = !usersError;
-    results.supabase.tables.users = usersError ? `❌ ${usersError.message}` : '✅ Connected';
+      if (userError) {
+        console.error("❌ User not found:", userError);
+        return res.status(400).send("User not found");
+      }
 
-    if (usersError) {
-      console.error("❌ Supabase connection error:", usersError);
-    } else {
-      console.log("✅ Supabase connected successfully");
+      // Direct update - NO RPC NEEDED
+      const newBalance = (user.balance || 0) + amount;
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ balance: newBalance })
+        .eq('id', userId);
+
+      if (updateError) {
+        console.error("❌ Update failed:", updateError);
+        return res.status(500).send("Update failed");
+      }
+
+      console.log(`✅ Balance updated to R${newBalance}`);
+
+      // Handle payments table - UPSERT
+      const { data: existingPayment } = await supabase
+        .from("payments")
+        .select("id")
+        .eq("payment_id", paymentId)
+        .maybeSingle();
+
+      if (existingPayment) {
+        // Update
+        await supabase
+          .from("payments")
+          .update({ 
+            status: "completed",
+            completed_at: new Date().toISOString(),
+            transaction_id: pfPaymentId
+          })
+          .eq("payment_id", paymentId);
+      } else {
+        // Insert
+        await supabase
+          .from("payments")
+          .insert([{
+            payment_id: paymentId,
+            user_id: userId,
+            amount: amount,
+            status: "completed",
+            transaction_id: pfPaymentId,
+            completed_at: new Date().toISOString(),
+            created_at: new Date().toISOString()
+          }]);
+      }
+
+      // Record transaction
+      await supabase
+        .from("transactions")
+        .insert([{
+          user_id: userId,
+          amount: amount,
+          type: "deposit",
+          provider: "payfast",
+          status: "completed",
+          payment_id: paymentId,
+          reference: pfPaymentId,
+          created_at: new Date().toISOString()
+        }]);
+
+      console.log(`✅ Payment completed for user ${userId}: R${amount}`);
     }
 
-    // Test RPC function
-    console.log("\n📊 Testing increment_balance RPC function...");
-    const testUserId = req.query.userId || '00000000-0000-0000-0000-000000000000';
-    const { error: rpcError } = await supabase
-      .rpc('increment_balance', {
-        user_id_input: testUserId,
-        amount_input: 0
-      });
-
-    results.supabase.rpc_function = !rpcError ? '✅ Exists' : `❌ ${rpcError.message}`;
-    
-    if (rpcError) {
-      console.log("ℹ️ RPC function check:", rpcError.message);
-    } else {
-      console.log("✅ RPC function exists");
-    }
-
-    // Get recent transactions
-    console.log("\n📊 Checking recent transactions...");
-    const { data: recentTransactions, error: txError } = await supabase
-      .from('transactions')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(5);
-
-    if (!txError) {
-      results.supabase.recent_transactions = recentTransactions;
-      console.log(`✅ Found ${recentTransactions.length} recent transactions`);
-    }
-
-    console.log("\n✅ Diagnostic complete");
     console.log("=".repeat(60) + "\n");
-
-    res.json({
-      success: true,
-      ...results,
-      instructions: {
-        test_webhook: `/api/payfast/test-notify?userId=YOUR_USER_ID&amount=100`,
-        view_logs: "Check Render logs for detailed webhook output",
-        create_rpc: "If RPC function is missing, run this SQL in Supabase: CREATE OR REPLACE FUNCTION increment_balance(user_id_input UUID, amount_input DECIMAL) RETURNS void AS $$ BEGIN UPDATE users SET balance = COALESCE(balance, 0) + amount_input WHERE id = user_id_input; END; $$ LANGUAGE plpgsql SECURITY DEFINER;"
-      }
-    });
-
+    res.status(200).send("OK");
   } catch (error) {
-    console.error("❌ Diagnostic error:", error);
-    res.status(500).json({ error: error.message });
+    console.error("❌ Webhook error:", error);
+    res.status(500).send("Internal Server Error");
   }
 });
 
@@ -787,38 +847,56 @@ app.post("/api/payfast/test-notify", express.urlencoded({ extended: true }), asy
 
     console.log(`👤 User found: ${user.username}, Current balance: R${user.balance || 0}`);
 
-    // Update user balance using RPC
-    const { data: rpcData, error: rpcError } = await supabase
-      .rpc("increment_balance", {
-        user_id_input: userId,
-        amount_input: parseFloat(amount)
-      });
+    // Direct update - NO RPC NEEDED
+    const newBalance = (user.balance || 0) + parseFloat(amount);
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ balance: newBalance })
+      .eq('id', userId);
 
-    if (rpcError) {
-      console.error("❌ Error updating balance:", rpcError);
-      
-      // Fallback: direct update
-      console.log("🔄 Trying direct update...");
-      const { error: directError } = await supabase
-        .from('users')
-        .update({ balance: (user.balance || 0) + parseFloat(amount) })
-        .eq('id', userId);
-
-      if (directError) {
-        console.error("❌ Direct update failed:", directError);
-        return res.status(500).json({ error: "Failed to update balance", details: directError });
-      }
+    if (updateError) {
+      console.error("❌ Update failed:", updateError);
+      return res.status(500).json({ error: "Failed to update balance", details: updateError });
     }
 
-    // Get updated balance
-    const { data: updatedUser, error: fetchError } = await supabase
-      .from('users')
-      .select('balance')
-      .eq('id', userId)
-      .single();
+    console.log(`✅ Balance updated to R${newBalance}`);
+
+    // Handle payments table - UPSERT
+    const paymentId = `test_${Date.now()}`;
+    const pfPaymentId = `pf_test_${Date.now()}`;
+
+    const { data: existingPayment } = await supabase
+      .from("payments")
+      .select("id")
+      .eq("payment_id", paymentId)
+      .maybeSingle();
+
+    if (existingPayment) {
+      await supabase
+        .from("payments")
+        .update({ 
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          transaction_id: pfPaymentId
+        })
+        .eq("payment_id", paymentId);
+      console.log("✅ Payment updated");
+    } else {
+      await supabase
+        .from("payments")
+        .insert([{
+          payment_id: paymentId,
+          user_id: userId,
+          amount: parseFloat(amount),
+          status: "completed",
+          transaction_id: pfPaymentId,
+          completed_at: new Date().toISOString(),
+          created_at: new Date().toISOString()
+        }]);
+      console.log("✅ Payment inserted");
+    }
 
     // Record transaction
-    const paymentId = `test_${Date.now()}`;
     const { error: transactionError } = await supabase
       .from("transactions")
       .insert([{
@@ -828,7 +906,7 @@ app.post("/api/payfast/test-notify", express.urlencoded({ extended: true }), asy
         provider: "payfast_test",
         status: "completed",
         payment_id: paymentId,
-        reference: `test_${Date.now()}`,
+        reference: pfPaymentId,
         created_at: new Date().toISOString()
       }]);
 
@@ -839,7 +917,7 @@ app.post("/api/payfast/test-notify", express.urlencoded({ extended: true }), asy
     }
 
     console.log(`✅ Test payment completed for user ${userId}: R${amount}`);
-    console.log(`💰 New balance: R${updatedUser?.balance || 0}`);
+    console.log(`💰 New balance: R${newBalance}`);
     console.log("=".repeat(60) + "\n");
 
     res.json({ 
@@ -848,7 +926,7 @@ app.post("/api/payfast/test-notify", express.urlencoded({ extended: true }), asy
       userId,
       amount,
       oldBalance: user.balance || 0,
-      newBalance: updatedUser?.balance || 0
+      newBalance
     });
 
   } catch (error) {
@@ -887,12 +965,22 @@ app.get("/api/payfast/test-notify", async (req, res) => {
       return res.status(404).send(`
         <!DOCTYPE html>
         <html>
-        <head><title>Error</title></head>
+        <head>
+          <title>Error</title>
+          <style>
+            body { font-family: Arial; display: flex; justify-content: center; align-items: center; height: 100vh; background: #fee2e2; }
+            .card { background: white; padding: 2rem; border-radius: 1rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 400px; }
+            h1 { color: #b91c1c; }
+            .button { background: #6b7280; color: white; padding: 0.5rem 1rem; border-radius: 0.5rem; text-decoration: none; display: inline-block; margin-top: 1rem; }
+          </style>
+        </head>
         <body>
-          <h1>❌ User Not Found</h1>
-          <p>User ID: ${userId}</p>
-          <p>Error: ${userError.message}</p>
-          <a href="/">Return to Dashboard</a>
+          <div class="card">
+            <h1>❌ User Not Found</h1>
+            <p>User ID: ${userId}</p>
+            <p>Error: ${userError.message}</p>
+            <a href="/" class="button">Return to Dashboard</a>
+          </div>
         </body>
         </html>
       `);
@@ -900,38 +988,54 @@ app.get("/api/payfast/test-notify", async (req, res) => {
 
     console.log(`👤 User found: ${user.username}, Current balance: R${user.balance || 0}`);
 
-    // Update user balance using RPC
-    const { error: rpcError } = await supabase
-      .rpc("increment_balance", {
-        user_id_input: userId,
-        amount_input: parseFloat(amount)
-      });
+    // Direct update - NO RPC NEEDED
+    const newBalance = (user.balance || 0) + parseFloat(amount);
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ balance: newBalance })
+      .eq('id', userId);
 
-    if (rpcError) {
-      console.error("❌ RPC Error:", rpcError);
-      
-      // Fallback: direct update
-      console.log("🔄 Trying direct update...");
-      const { error: directError } = await supabase
-        .from('users')
-        .update({ balance: (user.balance || 0) + parseFloat(amount) })
-        .eq('id', userId);
-
-      if (directError) {
-        console.error("❌ Direct update failed:", directError);
-        throw directError;
-      }
+    if (updateError) {
+      console.error("❌ Update failed:", updateError);
+      throw updateError;
     }
 
-    // Get updated balance
-    const { data: updatedUser, error: fetchError } = await supabase
-      .from('users')
-      .select('balance')
-      .eq('id', userId)
-      .single();
+    console.log(`✅ Balance updated to R${newBalance}`);
+
+    // Handle payments table - UPSERT
+    const paymentId = `test_${Date.now()}`;
+    const pfPaymentId = `pf_test_${Date.now()}`;
+
+    const { data: existingPayment } = await supabase
+      .from("payments")
+      .select("id")
+      .eq("payment_id", paymentId)
+      .maybeSingle();
+
+    if (existingPayment) {
+      await supabase
+        .from("payments")
+        .update({ 
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          transaction_id: pfPaymentId
+        })
+        .eq("payment_id", paymentId);
+    } else {
+      await supabase
+        .from("payments")
+        .insert([{
+          payment_id: paymentId,
+          user_id: userId,
+          amount: parseFloat(amount),
+          status: "completed",
+          transaction_id: pfPaymentId,
+          completed_at: new Date().toISOString(),
+          created_at: new Date().toISOString()
+        }]);
+    }
 
     // Record transaction
-    const paymentId = `test_${Date.now()}`;
     await supabase
       .from("transactions")
       .insert([{
@@ -941,12 +1045,12 @@ app.get("/api/payfast/test-notify", async (req, res) => {
         provider: "payfast_test",
         status: "completed",
         payment_id: paymentId,
-        reference: `test_${Date.now()}`,
+        reference: pfPaymentId,
         created_at: new Date().toISOString()
       }]);
 
     console.log(`✅ Test payment completed for user ${userId}: R${amount}`);
-    console.log(`💰 New balance: R${updatedUser?.balance || 0}`);
+    console.log(`💰 New balance: R${newBalance}`);
     console.log("=".repeat(60) + "\n");
 
     // Return HTML for browser testing
@@ -973,7 +1077,7 @@ app.get("/api/payfast/test-notify", async (req, res) => {
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             text-align: center;
-            max-width: 400px;
+            max-width: 500px;
             width: 90%;
           }
           h1 {
@@ -1017,6 +1121,7 @@ app.get("/api/payfast/test-notify", async (req, res) => {
           .value {
             color: #059669;
             font-weight: 600;
+            word-break: break-all;
           }
           .balance {
             font-size: 2rem;
@@ -1071,18 +1176,21 @@ app.get("/api/payfast/test-notify", async (req, res) => {
             </div>
             <div class="info-row">
               <span class="label">New Balance:</span>
-              <span class="value">R${updatedUser?.balance || 0}</span>
+              <span class="value">R${newBalance}</span>
             </div>
           </div>
 
           <div class="balance">
-            R${updatedUser?.balance || 0}
+            R${newBalance}
           </div>
 
           <a href="/" class="button">Return to Dashboard</a>
           
           <p class="note">
             ✅ Balance updated successfully! Check your dashboard.
+          </p>
+          <p class="note" style="font-size: 0.75rem;">
+            Transaction and payment records created in database.
           </p>
         </div>
       </body>
@@ -1168,53 +1276,163 @@ app.get("/api/payfast/test-notify", async (req, res) => {
   }
 });
 
-// ✅ DEBUG WEBHOOK ENDPOINT - Shows recent webhook activity
+// ✅ CHECK RPC FUNCTION ENDPOINT
+app.get("/api/check-rpc", async (req, res) => {
+  try {
+    console.log("\n🔧 CHECKING RPC FUNCTION");
+    
+    const testUserId = req.query.userId || '00000000-0000-0000-0000-000000000000';
+    
+    const { error } = await supabase
+      .rpc('increment_balance', {
+        user_id_input: testUserId,
+        amount_input: 0
+      });
+
+    const result = {
+      rpc_exists: !error,
+      error_message: error?.message || null,
+      hint: null
+    };
+
+    if (error?.message?.includes('does not exist')) {
+      result.hint = 'Run this SQL in Supabase to create the function:\n\n' +
+        'CREATE OR REPLACE FUNCTION increment_balance(\n' +
+        '  user_id_input UUID,\n' +
+        '  amount_input DECIMAL\n' +
+        ')\n' +
+        'RETURNS void\n' +
+        'LANGUAGE plpgsql\n' +
+        'SECURITY DEFINER\n' +
+        'AS $$\n' +
+        'BEGIN\n' +
+        '  UPDATE users \n' +
+        '  SET balance = COALESCE(balance, 0) + amount_input\n' +
+        '  WHERE id = user_id_input;\n' +
+        'END;\n' +
+        '$$;';
+    }
+
+    console.log("✅ RPC check complete:", result);
+    res.json({
+      success: true,
+      ...result
+    });
+
+  } catch (error) {
+    console.error("❌ RPC check error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ DIAGNOSTIC ENDPOINT
+app.get("/api/diagnostic", async (req, res) => {
+  try {
+    console.log("\n🔧 DIAGNOSTIC CHECK");
+    console.log("=".repeat(60));
+    
+    const results = {
+      server: {
+        time: new Date().toISOString(),
+        node_version: process.version,
+        environment: isProduction ? 'production' : 'development'
+      },
+      supabase: {
+        connected: false,
+        tables: {},
+        rpc_function: null
+      },
+      payfast: {
+        configured: !!process.env.PAYFAST_MERCHANT_ID,
+        merchant_id: process.env.PAYFAST_MERCHANT_ID,
+        base_url: process.env.PAYFAST_BASE_URL
+      }
+    };
+
+    // Test Supabase connection
+    console.log("📊 Testing Supabase connection...");
+    const { data: users, error: usersError } = await supabase
+      .from('users')
+      .select('count', { count: 'exact', head: true });
+
+    results.supabase.connected = !usersError;
+    results.supabase.tables.users = usersError ? `❌ ${usersError.message}` : '✅ Connected';
+
+    // Test payments table
+    const { error: paymentsError } = await supabase
+      .from('payments')
+      .select('count', { count: 'exact', head: true });
+    
+    results.supabase.tables.payments = paymentsError ? `❌ ${paymentsError.message}` : '✅ Connected';
+
+    // Test transactions table
+    const { error: transactionsError } = await supabase
+      .from('transactions')
+      .select('count', { count: 'exact', head: true });
+    
+    results.supabase.tables.transactions = transactionsError ? `❌ ${transactionsError.message}` : '✅ Connected';
+
+    // Test RPC function
+    console.log("\n📊 Testing increment_balance RPC function...");
+    const testUserId = req.query.userId || '00000000-0000-0000-0000-000000000000';
+    const { error: rpcError } = await supabase
+      .rpc('increment_balance', {
+        user_id_input: testUserId,
+        amount_input: 0
+      });
+
+    results.supabase.rpc_function = !rpcError ? '✅ Exists' : `❌ ${rpcError.message}`;
+
+    console.log("\n✅ Diagnostic complete");
+    console.log("=".repeat(60) + "\n");
+
+    res.json({
+      success: true,
+      ...results,
+      instructions: {
+        test_webhook: `/api/payfast/test-notify?userId=YOUR_USER_ID&amount=100`,
+        use_simple_webhook: `/api/payfast/notify-simple`,
+        check_rpc: `/api/check-rpc`
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Diagnostic error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ DEBUG WEBHOOK STATUS
 app.get("/api/payfast/webhook-status", async (req, res) => {
   try {
-    // Get recent transactions from the last 24 hours
+    // Get recent transactions
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     
-    const { data: transactions, error: txError } = await supabase
+    const { data: transactions } = await supabase
       .from('transactions')
       .select('*')
-      .eq('provider', 'payfast')
       .gte('created_at', oneDayAgo)
       .order('created_at', { ascending: false })
-      .limit(20);
+      .limit(10);
 
-    // Get recent payments
-    const { data: payments, error: pmError } = await supabase
+    const { data: payments } = await supabase
       .from('payments')
       .select('*')
       .gte('created_at', oneDayAgo)
       .order('created_at', { ascending: false })
-      .limit(20);
+      .limit(10);
 
-    // Get webhook configuration info
     const webhookInfo = {
       endpoint: `${process.env.APP_BASE_URL}/api/payfast/notify`,
-      method: 'POST',
-      expected_format: 'application/x-www-form-urlencoded',
+      simple_endpoint: `${process.env.APP_BASE_URL}/api/payfast/notify-simple`,
       recent_transactions: transactions || [],
       recent_payments: payments || [],
-      supabase_connected: !!supabase,
-      server_time: new Date().toISOString(),
-      payfast_configured: {
-        merchant_id: !!process.env.PAYFAST_MERCHANT_ID,
-        merchant_key: !!process.env.PAYFAST_MERCHANT_KEY,
-        passphrase: !!process.env.PAYFAST_PASSPHRASE
-      }
+      server_time: new Date().toISOString()
     };
 
     res.json({
       success: true,
-      webhook: webhookInfo,
-      instructions: {
-        test_get: `/api/payfast/test-notify?userId=YOUR_USER_ID&amount=100`,
-        test_post: `/api/payfast/test-notify (POST with JSON body)`,
-        diagnostic: `/api/diagnostic`,
-        check_webhook: `Make sure PayFast is configured to send to: ${webhookInfo.endpoint}`
-      }
+      webhook: webhookInfo
     });
 
   } catch (error) {
@@ -1235,15 +1453,11 @@ if (isProduction) {
     // Serve static files
     app.use(express.static(distPath));
     
-    // Handle client-side routing - FIXED VERSION
-    // This middleware checks if the request is for an API route
+    // Handle client-side routing
     app.use((req, res, next) => {
-      // If it's an API route, skip and let the API handlers deal with it
       if (req.path.startsWith('/api')) {
         return next();
       }
-      
-      // For all other routes, serve the React app
       res.sendFile(path.join(distPath, 'index.html'));
     });
     
@@ -1257,20 +1471,12 @@ if (isProduction) {
 
 // ============ ERROR HANDLING ============
 app.use((req, res) => {
-  // Only return 404 for API routes in production
   if (req.path.startsWith('/api')) {
     res.status(404).json({ 
       error: "API endpoint not found", 
       path: req.url
     });
-  } else if (!isProduction) {
-    // In development, let Vite handle non-API routes
-    res.status(404).json({ 
-      error: "Not found - in development, frontend is handled by Vite", 
-      path: req.url 
-    });
   }
-  // In production, non-API routes are handled by the middleware above
 });
 
 app.use((err, req, res, next) => {
@@ -1294,14 +1500,12 @@ app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`📝 API Endpoints:`);
   console.log(`   GET  http://localhost:${PORT}/api/health`);
-  console.log(`   GET  http://localhost:${PORT}/api/ping`);
   console.log(`   GET  http://localhost:${PORT}/api/diagnostic`);
-  console.log(`   GET  http://localhost:${PORT}/api/payfast/debug`);
+  console.log(`   GET  http://localhost:${PORT}/api/check-rpc`);
   console.log(`   GET  http://localhost:${PORT}/api/payfast/test-notify`);
   console.log(`   POST http://localhost:${PORT}/api/payfast/test-notify`);
-  console.log(`   GET  http://localhost:${PORT}/api/payfast/webhook-status`);
-  console.log(`   POST http://localhost:${PORT}/api/payfast/create-payment`);
   console.log(`   POST http://localhost:${PORT}/api/payfast/notify (webhook)`);
+  console.log(`   POST http://localhost:${PORT}/api/payfast/notify-simple (simple webhook)`);
   
   if (!isProduction) {
     console.log(`\n🎨 Frontend:`);
