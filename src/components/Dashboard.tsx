@@ -1,4 +1,4 @@
-import { LogOut, User as UserIcon, Wallet, CreditCard, Users, Moon, Sun } from 'lucide-react';
+import { LogOut, Wallet, CreditCard, Users, Moon, Sun } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useState, useEffect } from 'react';
@@ -11,7 +11,7 @@ export default function Dashboard() {
   const [amount, setAmount] = useState<number | ''>('');
   const [balance, setBalance] = useState<number | null>(null);
   const [communityBalance, setCommunityBalance] = useState<number>(0);
-  const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [apiStatus, setApiStatus] = useState<'online' | 'offline'>('online');
   const [lastPayment, setLastPayment] = useState<{amount: number, date: string} | null>(null);
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
   const [amountError, setAmountError] = useState<string>('');
@@ -19,27 +19,14 @@ export default function Dashboard() {
   // Use environment variable with fallback
   const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://savingwork.onrender.com';
 
-  // Debug: Log user info when component mounts or user changes
-  console.log('🔍 DEBUG: Current user object:', user);
-  console.log('🔍 DEBUG: User ID:', user?.id);
-  console.log('🔍 DEBUG: Username:', user?.username);
-  console.log('🔍 DEBUG: Backend URL:', backendUrl);
-
   // Fetch user balance and community balance when component mounts or user changes
   useEffect(() => {
-    console.log('🔍 DEBUG: Dashboard mounted, checking API health...');
-    checkApiHealth();
-    
     if (user?.id) {
       fetchUserBalance();
       fetchCommunityBalance();
       fetchRecentTransactions();
     }
-  }, [user]);
-
-  // Also log when user changes
-  useEffect(() => {
-    console.log('🔍 DEBUG: User state changed:', user);
+    checkApiHealth();
   }, [user]);
 
   // Set up real-time subscription for balance updates
@@ -71,73 +58,46 @@ export default function Dashboard() {
 
   const checkApiHealth = async () => {
     try {
-      console.log('🔍 DEBUG: Checking API health at:', `${backendUrl}/api/health`);
       const response = await fetch(`${backendUrl}/api/health`);
-      console.log('🔍 DEBUG: API Health Response status:', response.status);
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log('✅ Backend API is online:', data);
-        setApiStatus('online');
-      } else {
-        console.error('❌ Backend API returned error:', response.status);
-        setApiStatus('offline');
-      }
+      setApiStatus(response.ok ? 'online' : 'offline');
     } catch (error) {
-      console.error('❌ Cannot reach backend API:', error);
       setApiStatus('offline');
     }
   };
 
   const fetchUserBalance = async () => {
     try {
-      console.log('💰 Fetching user balance for:', user?.id);
-      
       const { data, error } = await supabase
         .from('users')
         .select('balance')
         .eq('id', user?.id)
         .single();
       
-      if (error) {
-        console.error('❌ Error fetching balance:', error);
-        return;
+      if (!error && data) {
+        setBalance(data.balance || 0);
       }
-      
-      console.log('💰 User balance fetched:', data?.balance);
-      setBalance(data?.balance || 0);
     } catch (error) {
-      console.error('❌ Error fetching balance:', error);
+      console.error('Error fetching balance:', error);
     }
   };
 
   const fetchCommunityBalance = async () => {
     try {
-      console.log('🌍 Fetching community balance...');
-      
       const { data, error } = await supabase
         .from('users')
         .select('balance');
       
-      if (error) {
-        console.error('❌ Error fetching community balance:', error);
-        return;
-      }
-      
-      if (data) {
+      if (!error && data) {
         const total = data.reduce((sum, user) => sum + (user.balance || 0), 0);
-        console.log('🌍 Community balance:', total);
         setCommunityBalance(total);
       }
     } catch (error) {
-      console.error('❌ Error fetching community balance:', error);
+      console.error('Error fetching community balance:', error);
     }
   };
 
   const fetchRecentTransactions = async () => {
     try {
-      console.log('📊 Fetching recent transactions...');
-      
       const { data, error } = await supabase
         .from('transactions')
         .select('*')
@@ -145,15 +105,11 @@ export default function Dashboard() {
         .order('created_at', { ascending: false })
         .limit(5);
       
-      if (error) {
-        console.error('❌ Error fetching transactions:', error);
-        return;
+      if (!error && data) {
+        setRecentTransactions(data);
       }
-      
-      console.log('📊 Recent transactions:', data);
-      setRecentTransactions(data || []);
     } catch (error) {
-      console.error('❌ Error fetching transactions:', error);
+      console.error('Error fetching transactions:', error);
     }
   };
 
@@ -191,7 +147,6 @@ export default function Dashboard() {
 
   const handlePayment = async () => {
     if (!user?.id) {
-      console.error('❌ No user ID found');
       alert("Please log in first");
       return;
     }
@@ -205,27 +160,20 @@ export default function Dashboard() {
       return;
     }
 
-    console.log('🔍 DEBUG: User ID for payment:', user.id);
-    console.log('🔍 DEBUG: Payment amount:', amount);
-
     if (apiStatus === 'offline') {
-      alert("Backend API is offline. Please try again later.");
+      alert("Payment service is temporarily unavailable. Please try again later.");
       return;
     }
 
     setLoading(true);
     try {
-      console.log('🚀 Sending payment request to:', `${backendUrl}/api/payfast/create-payment`);
-      console.log('📦 Request body:', { amount, userId: user.id });
-      
       const res = await fetch(
         `${backendUrl}/api/payfast/create-payment`,
         {
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
-            "Accept": "application/json",
-            "ngrok-skip-browser-warning": "true"
+            "Accept": "application/json"
           },
           body: JSON.stringify({
             amount: amount,
@@ -234,30 +182,14 @@ export default function Dashboard() {
         }
       );
 
-      console.log('📡 Response status:', res.status);
-      console.log('📡 Response headers:', Object.fromEntries([...res.headers]));
-
-      const contentType = res.headers.get('content-type');
-      console.log('📡 Content-Type:', contentType);
-      
-      if (contentType?.includes('text/html')) {
-        const html = await res.text();
-        console.error('❌ Received HTML instead of JSON:', html.substring(0, 200));
-        throw new Error('Server returned HTML page - API endpoint may be misconfigured');
-      }
-
       if (!res.ok) {
         const errorText = await res.text();
-        console.error('❌ Error response:', errorText);
         throw new Error(`Payment failed: ${res.status} - ${errorText}`);
       }
 
       const data = await res.json();
-      console.log('✅ Payment response:', data);
       
       if (data.url) {
-        console.log('🔄 Redirecting to PayFast:', data.url);
-        
         sessionStorage.setItem('pendingPayment', JSON.stringify({
           amount: amount,
           timestamp: new Date().toISOString()
@@ -265,11 +197,10 @@ export default function Dashboard() {
         
         window.location.href = data.url;
       } else {
-        console.error('❌ No URL in response:', data);
         alert('Payment initiation failed: No redirect URL received');
       }
     } catch (err) {
-      console.error("🔥 Payment error:", err);
+      console.error("Payment error:", err);
       alert(err instanceof Error ? err.message : "Payment failed. Please try again.");
     } finally {
       setLoading(false);
@@ -282,9 +213,7 @@ export default function Dashboard() {
     if (pending) {
       const payment = JSON.parse(pending);
       setLastPayment(payment);
-      
       sessionStorage.removeItem('pendingPayment');
-      
       fetchUserBalance();
       fetchCommunityBalance();
       fetchRecentTransactions();
@@ -300,17 +229,13 @@ export default function Dashboard() {
     }).format(value);
   };
 
-  // Show API status warning if offline
   if (apiStatus === 'offline') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-green-50 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center">
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8 max-w-md text-center">
-          <h2 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">Backend Unavailable</h2>
-          <p className="text-gray-600 dark:text-gray-300 mb-4">
-            Cannot connect to the backend API at <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">{backendUrl}</code>
-          </p>
+          <h2 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">Service Unavailable</h2>
           <p className="text-gray-600 dark:text-gray-300 mb-6">
-            Please ensure the backend server is running and accessible.
+            Payment service is temporarily unavailable. Please try again later.
           </p>
           <button
             onClick={checkApiHealth}
@@ -353,9 +278,6 @@ export default function Dashboard() {
                 {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
               </button>
 
-              {apiStatus === 'checking' && (
-                <span className="text-sm text-yellow-600 dark:text-yellow-400">Connecting...</span>
-              )}
               {apiStatus === 'online' && (
                 <span className="text-sm text-green-600 dark:text-green-400">● Online</span>
               )}
@@ -374,23 +296,16 @@ export default function Dashboard() {
         {/* Welcome Card */}
         <div className={`${
           theme === 'dark' ? 'bg-gray-800' : 'bg-white'
-        } rounded-2xl shadow-xl p-8 text-center transition-colors duration-300`}>
+        } rounded-2xl shadow-xl p-8 text-center transition-colors duration-300 mb-8`}>
           <h2 className={`text-3xl font-bold ${
             theme === 'dark' ? 'text-white' : 'text-gray-800'
           }`}>
-            Welcome, {user?.username || 'User'}! 👋
+            Welcome back, {user?.username || 'User'}! 👋
           </h2>
-          <p className={`mt-2 ${
-            theme === 'dark' ? 'text-gray-300' : 'text-gray-600'
-          }`}>
-            User ID: <span className={`font-mono text-sm px-2 py-1 rounded ${
-              theme === 'dark' ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600'
-            }`}>{user?.id}</span>
-          </p>
         </div>
 
         {/* Dashboard Grid */}
-        <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {/* Balance Card */}
           <div className={`${
             theme === 'dark' ? 'bg-gray-800 hover:bg-gray-750' : 'bg-white hover:shadow-xl'
@@ -519,7 +434,6 @@ export default function Dashboard() {
                 ))}
               </div>
               
-              {/* Amount validation message */}
               {amountError && (
                 <p className="text-xs text-red-500 dark:text-red-400 mb-2">{amountError}</p>
               )}
@@ -606,71 +520,6 @@ export default function Dashboard() {
                 theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
               }`}>No transactions yet</p>
             )}
-          </div>
-        </div>
-
-        {/* Debug Info Panel */}
-        <div className={`mt-8 p-4 rounded-lg border ${
-          theme === 'dark' 
-            ? 'bg-gray-800 border-gray-700 text-gray-300' 
-            : 'bg-gray-100 border-gray-200 text-gray-600'
-        }`}>
-          <h3 className={`font-bold mb-2 ${
-            theme === 'dark' ? 'text-white' : 'text-gray-700'
-          }`}>🔧 Debug Information:</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-            <div>
-              <span className="font-semibold">Backend URL:</span>{' '}
-              <code className={`px-2 py-1 rounded ${
-                theme === 'dark' ? 'bg-gray-700' : 'bg-white'
-              }`}>{backendUrl}</code>
-            </div>
-            <div>
-              <span className="font-semibold">API Status:</span>{' '}
-              <span className={apiStatus === 'online' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
-                {apiStatus}
-              </span>
-            </div>
-            <div>
-              <span className="font-semibold">User ID:</span>{' '}
-              <code className={`px-2 py-1 rounded ${
-                theme === 'dark' ? 'bg-gray-700' : 'bg-white'
-              }`}>{user?.id || 'Not logged in'}</code>
-            </div>
-            <div>
-              <span className="font-semibold">Username:</span>{' '}
-              <span>{user?.username || 'N/A'}</span>
-            </div>
-            <div>
-              <span className="font-semibold">Your Balance:</span>{' '}
-              <span className="font-bold text-green-600 dark:text-green-400">{formatCurrency(balance ?? 0)}</span>
-            </div>
-            <div>
-              <span className="font-semibold">Community Total:</span>{' '}
-              <span className="font-bold text-orange-600 dark:text-orange-400">{formatCurrency(communityBalance)}</span>
-            </div>
-          </div>
-          <div className="flex gap-2 mt-3">
-            <button
-              onClick={() => {
-                fetchUserBalance();
-                fetchCommunityBalance();
-                fetchRecentTransactions();
-              }}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
-            >
-              🔄 Refresh Balances
-            </button>
-            <button
-              onClick={() => {
-                console.log('📊 Manual debug - Current user:', user);
-                console.log('📊 Manual debug - Backend URL:', backendUrl);
-                checkApiHealth();
-              }}
-              className="px-4 py-2 bg-gray-600 text-white rounded-lg text-sm hover:bg-gray-700"
-            >
-              🔧 Debug
-            </button>
           </div>
         </div>
       </div>
