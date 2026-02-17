@@ -8,7 +8,9 @@ interface FaceLoginProps {
   onSuccess: (user: User) => void;
 }
 
-const RECOGNITION_THRESHOLD = 0.6;
+const RECOGNITION_THRESHOLD = 0.5; // 50% confidence threshold
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_DURATION = 15 * 60 * 1000; // 15 minutes
 
 export default function FaceLogin({ onSuccess }: FaceLoginProps) {
   const { theme } = useTheme();
@@ -17,6 +19,8 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const streamRef = useRef<MediaStream | null>(null);
+  const [loginAttempts, setLoginAttempts] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState<Date | null>(null);
 
   useEffect(() => {
     startCamera();
@@ -27,10 +31,18 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
     };
   }, []);
 
+  useEffect(() => {
+    // Check for lockout
+    if (lockedUntil && new Date() > lockedUntil) {
+      setLockedUntil(null);
+      setLoginAttempts(0);
+    }
+  }, [lockedUntil]);
+
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480 }
+        video: { width: 640, height: 480, facingMode: 'user' }
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -54,6 +66,13 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
       return;
     }
 
+    // Check if locked
+    if (lockedUntil) {
+      const minutesLeft = Math.ceil((lockedUntil.getTime() - Date.now()) / 60000);
+      setError(`Too many attempts. Try again in ${minutesLeft} minutes.`);
+      return;
+    }
+
     setIsScanning(true);
     setError('');
     setStatus('Detecting face...');
@@ -62,18 +81,21 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
       const detection = await detectFace(videoRef.current);
 
       if (!detection) {
+        handleFailedAttempt();
         setError('No face detected. Please ensure your face is visible and well-lit.');
         setIsScanning(false);
         return;
       }
 
-      setStatus('Face detected! Comparing with registered users...');
+      setStatus('Face detected! Verifying identity...');
 
+      // Get all users
       const { data: users, error: fetchError } = await supabase
         .from('users')
         .select('*');
 
       if (fetchError || !users || users.length === 0) {
+        handleFailedAttempt();
         setError('No registered users found');
         setIsScanning(false);
         return;
@@ -82,31 +104,100 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
       const detectedDescriptor = detection.descriptor;
       let bestMatch: User | null = null;
       let bestDistance = Infinity;
+      let secondBestDistance = Infinity;
 
+      // Find the best match and second best match
       for (const user of users) {
         const distance = calculateDistance(detectedDescriptor, user.face_descriptor);
+        
         if (distance < bestDistance) {
+          secondBestDistance = bestDistance;
           bestDistance = distance;
           bestMatch = user;
+        } else if (distance < secondBestDistance) {
+          secondBestDistance = distance;
         }
       }
 
-      if (bestMatch && bestDistance < RECOGNITION_THRESHOLD) {
+      // Calculate confidence (1 - distance, where distance is between 0 and 2)
+      const confidence = 1 - (bestDistance / 2); // Normalize to 0-1
+
+      console.log('Login attempt:', {
+        bestMatch: bestMatch?.username,
+        confidence: (confidence * 100).toFixed(1) + '%',
+        distance: bestDistance.toFixed(3)
+      });
+
+      // If we have a match with confidence above threshold, LOGIN SUCCESSFUL!
+      if (bestMatch && confidence >= RECOGNITION_THRESHOLD) {
         setStatus(`Welcome back, ${bestMatch.username}!`);
+        
+        // Reset attempts on successful login
+        setLoginAttempts(0);
+        
+        // Update last login
+        await supabase
+          .from('users')
+          .update({ last_login_at: new Date().toISOString() })
+          .eq('id', bestMatch.id);
+
         setTimeout(() => {
           stopCamera();
           onSuccess(bestMatch);
         }, 1500);
-      } else {
-        setError('Face not recognized. Please try again or register first.');
+      } 
+      // No match found
+      else {
+        handleFailedAttempt();
+        setError('Face not recognized. Please try again or register.');
         setIsScanning(false);
       }
     } catch (err) {
       console.error('Login error:', err);
+      handleFailedAttempt();
       setError('Login failed. Please try again.');
       setIsScanning(false);
     }
   };
+
+  const handleFailedAttempt = () => {
+    const newAttempts = loginAttempts + 1;
+    setLoginAttempts(newAttempts);
+
+    if (newAttempts >= MAX_LOGIN_ATTEMPTS) {
+      const lockUntil = new Date(Date.now() + LOCKOUT_DURATION);
+      setLockedUntil(lockUntil);
+    }
+  };
+
+  if (lockedUntil) {
+    const minutesLeft = Math.ceil((lockedUntil.getTime() - Date.now()) / 60000);
+    return (
+      <div className={`w-full max-w-2xl mx-auto rounded-lg shadow-lg p-8 ${
+        theme === 'dark' ? 'bg-gray-800' : 'bg-white'
+      }`}>
+        <div className="text-center">
+          <h2 className={`text-2xl font-bold mb-4 ${
+            theme === 'dark' ? 'text-white' : 'text-gray-800'
+          }`}>
+            Account Temporarily Locked
+          </h2>
+          <p className={`mb-6 ${theme === 'dark' ? 'text-gray-300' : 'text-gray-600'}`}>
+            Too many failed login attempts. Please try again in {minutesLeft} minutes.
+          </p>
+          <button
+            onClick={() => {
+              setLockedUntil(null);
+              setLoginAttempts(0);
+            }}
+            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
+          >
+            Reset Lock
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`w-full max-w-2xl mx-auto rounded-lg shadow-lg p-8 transition-colors duration-300 ${
@@ -150,14 +241,14 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
 
         {/* Status Message */}
         {status && (
-          <div className={`border px-4 py-3 rounded-lg transition-colors duration-300 ${
+          <div className={`border px-4 py-3 rounded-lg ${
             theme === 'dark'
               ? 'bg-green-900/20 border-green-800 text-green-300'
               : 'bg-green-50 border-green-200 text-green-700'
           }`}>
             <div className="flex items-center gap-2">
               {isScanning && (
-                <svg className="animate-spin h-4 w-4 text-green-600 dark:text-green-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
@@ -169,7 +260,7 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
 
         {/* Error Message */}
         {error && (
-          <div className={`border px-4 py-3 rounded-lg transition-colors duration-300 ${
+          <div className={`border px-4 py-3 rounded-lg ${
             theme === 'dark'
               ? 'bg-red-900/20 border-red-800 text-red-300'
               : 'bg-red-50 border-red-200 text-red-700'
@@ -189,22 +280,8 @@ export default function FaceLogin({ onSuccess }: FaceLoginProps) {
           }`}
         >
           <LogIn className="w-5 h-5" />
-          {isScanning ? 'Scanning...' : 'Login with Face'}
+          {isScanning ? 'Verifying...' : 'Login with Face'}
         </button>
-
-        {/* Privacy Note */}
-        <p className={`text-xs text-center ${
-          theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
-        }`}>
-          Your face is processed locally and never leaves your device
-        </p>
-
-        {/* Recognition Threshold Info */}
-        <div className={`text-xs text-center ${
-          theme === 'dark' ? 'text-gray-500' : 'text-gray-400'
-        }`}>
-          Recognition threshold: {RECOGNITION_THRESHOLD * 100}% match required
-        </div>
       </div>
     </div>
   );
