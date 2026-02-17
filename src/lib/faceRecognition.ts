@@ -1,31 +1,92 @@
 import * as faceapi from 'face-api.js';
 
 let modelsLoaded = false;
+let loadingPromise: Promise<void> | null = null;
 
 export async function loadModels() {
   if (modelsLoaded) return;
+  
+  if (loadingPromise) {
+    return loadingPromise;
+  }
 
-  const MODEL_URL = '/models';
+  loadingPromise = (async () => {
+    try {
+      console.log('Loading face detection models...');
+      
+      await faceapi.tf.setBackend('webgl');
+      await faceapi.tf.ready();
+      
+      const modelPath = '/models';
+      
+      await faceapi.nets.tinyFaceDetector.load(modelPath);
+      await faceapi.nets.faceLandmark68Net.load(modelPath);
+      await faceapi.nets.faceRecognitionNet.load(modelPath);
+      
+      modelsLoaded = true;
+      console.log('✅ All models loaded successfully');
+    } catch (error) {
+      console.error('❌ Error loading models:', error);
+      loadingPromise = null;
+      throw error;
+    }
+  })();
 
-  await Promise.all([
-    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-  ]);
-
-  modelsLoaded = true;
+  return loadingPromise;
 }
 
-export async function detectFace(video: HTMLVideoElement) {
-  const detection = await faceapi
-    .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
-    .withFaceLandmarks()
-    .withFaceDescriptor();
+export async function detectFace(videoElement: HTMLVideoElement) {
+  try {
+    await loadModels();
+    
+    const detection = await faceapi
+      .detectSingleFace(videoElement, new faceapi.TinyFaceDetectorOptions({
+        inputSize: 224,
+        scoreThreshold: 0.5
+      }))
+      .withFaceLandmarks()
+      .withFaceDescriptor();
 
-  return detection;
+    return detection;
+  } catch (error) {
+    console.error('Error detecting face:', error);
+    return null;
+  }
 }
 
-export function calculateDistance(descriptor1: Float32Array | number[], descriptor2: number[]) {
-  const arr1 = Array.from(descriptor1);
-  return faceapi.euclideanDistance(arr1, descriptor2);
+// Calculate Euclidean distance between two face descriptors
+export function calculateDistance(descriptor1: Float32Array, descriptor2: number[]): number {
+  const desc2 = new Float32Array(descriptor2);
+  
+  // Euclidean distance
+  let sum = 0;
+  for (let i = 0; i < descriptor1.length; i++) {
+    const diff = descriptor1[i] - desc2[i];
+    sum += diff * diff;
+  }
+  
+  return Math.sqrt(sum);
+}
+
+// Calculate cosine similarity (alternative method)
+export function calculateCosineSimilarity(descriptor1: Float32Array, descriptor2: number[]): number {
+  const desc2 = new Float32Array(descriptor2);
+  
+  let dotProduct = 0;
+  let norm1 = 0;
+  let norm2 = 0;
+  
+  for (let i = 0; i < descriptor1.length; i++) {
+    dotProduct += descriptor1[i] * desc2[i];
+    norm1 += descriptor1[i] * descriptor1[i];
+    norm2 += desc2[i] * desc2[i];
+  }
+  
+  return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
+}
+
+// Normalize descriptor for better comparison
+export function normalizeDescriptor(descriptor: Float32Array): Float32Array {
+  const norm = Math.sqrt(descriptor.reduce((sum, val) => sum + val * val, 0));
+  return new Float32Array(descriptor.map(val => val / norm));
 }
