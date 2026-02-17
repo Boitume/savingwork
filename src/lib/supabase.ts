@@ -8,6 +8,14 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 export interface User {
   id: string;
   username: string;
-  face_descriptor: number[];
-  created_at: string;
+  email?: string;
+  first_name?: string;
+  last_name?: string;
+  avatar_url?: string;
+  provider?: 'face' | 'google';
+  face_descriptor?: number[];
+  balance?: number;
+  created_at?: string;
+  registered_at?: string;
+  last_login_at?: string;
 }
