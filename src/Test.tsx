@@ -66,24 +66,33 @@ export default function Test() {
       } else {
         setStatus('🔄 Creating new user in database...');
         
-        // Create new user
+        // Create new user WITHOUT face_descriptor (it will be NULL)
         const newUser = {
           id: authUser.id,
           username: authUser.email?.split('@')[0] || `user_${Date.now()}`,
           email: authUser.email,
+          first_name: authUser.user_metadata?.full_name?.split(' ')[0] || '',
+          last_name: authUser.user_metadata?.full_name?.split(' ').slice(1).join(' ') || '',
+          avatar_url: authUser.user_metadata?.avatar_url,
           provider: 'google',
           balance: 0
+          // ❌ No face_descriptor field - it will be NULL
         };
 
-        const { error: insertError } = await supabase
+        console.log('Attempting to insert:', newUser);
+
+        const { data, error: insertError } = await supabase
           .from('users')
-          .insert([newUser]);
+          .insert([newUser])
+          .select()
+          .single();
 
         if (insertError) {
           setStatus(`❌ Failed to create user: ${insertError.message}`);
-          console.error(insertError);
+          console.error('Insert error:', insertError);
         } else {
           setStatus(`✅ User created successfully!`);
+          console.log('Created user:', data);
         }
         setLoading(false);
       }
@@ -99,7 +108,7 @@ export default function Test() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: window.location.href, // Redirect back to this same page
+          redirectTo: window.location.href,
         }
       });
       if (error) throw error;
