@@ -531,16 +531,18 @@ function generatePayFastSignature(params, passphrase) {
 
 // ============ PAYMENT ENDPOINTS ============
 
-// ✅ CREATE PAYMENT
+// ✅ CREATE PAYMENT - WITH VOUCHER SUPPORT
 app.post("/api/payfast/create-payment", async (req, res) => {
   try {
-    const { amount, userId } = req.body;
+    const { amount, userId, paymentMethod, voucherCode } = req.body;
 
     console.log('\n' + '💰'.repeat(30));
     console.log('💰 PAYMENT REQUEST');
     console.log('💰'.repeat(30));
     console.log('Amount:', amount);
     console.log('User ID:', userId);
+    console.log('Payment Method:', paymentMethod || 'payfast');
+    console.log('Voucher Code:', voucherCode || 'none');
 
     if (!amount || !userId) {
       return res.status(400).json({ 
@@ -553,8 +555,94 @@ app.post("/api/payfast/create-payment", async (req, res) => {
       return res.status(400).json({ error: "Invalid amount" });
     }
 
+    // If paying with voucher, handle it directly
+    if (paymentMethod === 'voucher') {
+      if (!voucherCode) {
+        return res.status(400).json({ error: "Voucher code required" });
+      }
+
+      console.log(`🎫 Processing voucher payment with code: ${voucherCode}`);
+
+      // Check if voucher exists and is valid
+      const { data: voucher, error: voucherError } = await supabase
+        .from('vouchers')
+        .select('*')
+        .eq('code', voucherCode)
+        .eq('status', 'active')
+        .single();
+
+      if (voucherError || !voucher) {
+        console.error("❌ Invalid voucher:", voucherError);
+        return res.status(400).json({ error: "Invalid voucher code" });
+      }
+
+      // Check if voucher has enough balance
+      if (voucher.balance < amount) {
+        return res.status(400).json({ 
+          error: "Insufficient voucher balance",
+          available: voucher.balance
+        });
+      }
+
+      // Get user's current balance
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('balance')
+        .eq('id', userId)
+        .single();
+
+      if (userError) {
+        console.error("❌ User not found:", userError);
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Update user balance
+      const newUserBalance = (user.balance || 0) + amount;
+      const newVoucherBalance = voucher.balance - amount;
+
+      // Perform all updates in a transaction
+      const { error: updateError } = await supabase.rpc('process_voucher_payment', {
+        p_user_id: userId,
+        p_amount: amount,
+        p_voucher_id: voucher.id,
+        p_voucher_code: voucherCode
+      });
+
+      if (updateError) {
+        console.error("❌ Voucher payment failed:", updateError);
+        return res.status(500).json({ error: "Payment processing failed" });
+      }
+
+      // Record transaction
+      const paymentId = `voucher_${Date.now()}`;
+      await supabase
+        .from("transactions")
+        .insert([{
+          user_id: userId,
+          amount: amount,
+          type: "deposit",
+          provider: "voucher",
+          status: "completed",
+          payment_id: paymentId,
+          reference: voucherCode,
+          created_at: new Date().toISOString()
+        }]);
+
+      console.log(`✅ Voucher payment completed: R${amount} added to user ${userId}`);
+      
+      return res.json({ 
+        success: true,
+        method: 'voucher',
+        message: 'Payment successful',
+        amount: amount,
+        new_balance: newUserBalance
+      });
+    }
+
+    // Regular PayFast payment (existing code)
     const paymentId = `pay_${Date.now()}`;
 
+    // Prepare PayFast data
     const data = {
       merchant_id: String(process.env.PAYFAST_MERCHANT_ID).trim(),
       merchant_key: String(process.env.PAYFAST_MERCHANT_KEY).trim(),
@@ -566,6 +654,12 @@ app.post("/api/payfast/create-payment", async (req, res) => {
       item_name: String("Savings Deposit").trim(),
       custom_str1: String(userId).trim()
     };
+
+    // If voucher code provided, add it to PayFast (if PayFast supports vouchers)
+    if (voucherCode && paymentMethod === 'payfast_voucher') {
+      data.voucher_code = voucherCode;
+      data.payment_method = 'voucher';
+    }
 
     console.log('\n📦 Data order:', Object.keys(data));
 
@@ -592,6 +686,8 @@ app.post("/api/payfast/create-payment", async (req, res) => {
           user_id: userId,
           amount: parseFloat(amount),
           status: "pending",
+          payment_method: paymentMethod || 'payfast',
+          voucher_code: voucherCode || null,
           created_at: new Date().toISOString()
         }]);
 
@@ -606,6 +702,7 @@ app.post("/api/payfast/create-payment", async (req, res) => {
 
     res.json({ 
       success: true,
+      method: paymentMethod || 'payfast',
       url: payfastUrl,
       payment_id: paymentId,
       amount: amount
