@@ -8,7 +8,7 @@ export default defineConfig({
     open: true,
     proxy: {
       '/api': {
-        target: 'https://4f1f-2a09-bac5-d4da-1c3-00-2d-cd.ngrok-free.app',
+        target: 'https://savingwork.onrender.com',
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path.replace(/^\/api/, ''),
