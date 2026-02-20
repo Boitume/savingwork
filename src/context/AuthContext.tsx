@@ -14,66 +14,64 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [retryCount, setRetryCount] = useState(0);
+  const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
-    // Check for existing session
-    checkUser();
+    let mounted = true;
     
+    const initialize = async () => {
+      try {
+        console.log('🔍 Initializing auth...');
+        
+        // Get session
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.error('Session error:', error);
+        }
+        
+        if (session?.user && mounted) {
+          console.log('✅ Session found for:', session.user.email);
+          await fetchUser(session.user.id, mounted);
+        } else {
+          console.log('ℹ️ No session found');
+          if (mounted) setLoading(false);
+        }
+      } catch (error) {
+        console.error('❌ Initialization error:', error);
+        if (mounted) setLoading(false);
+      } finally {
+        if (mounted) setInitialized(true);
+      }
+    };
+
+    initialize();
+
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('🔐 Auth state changed:', event, session?.user?.email);
-      
-      if (event === 'SIGNED_IN' && session?.user) {
-        console.log('✅ User signed in, handling session...');
-        await handleUserSession(session.user);
-      } else if (event === 'SIGNED_OUT') {
-        console.log('👋 User signed out');
-        setUser(null);
-        setLoading(false);
-      } else if (event === 'TOKEN_REFRESHED') {
-        console.log('🔄 Token refreshed for:', session?.user?.email);
-        if (session?.user) {
-          await fetchUserProfile(session.user.id);
-        }
-      } else if (event === 'USER_UPDATED') {
-        console.log('📝 User updated:', session?.user?.email);
-        if (session?.user) {
-          await fetchUserProfile(session.user.id);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        console.log('🔐 Auth event:', event, session?.user?.email);
+        
+        if (!mounted) return;
+
+        if (event === 'SIGNED_IN' && session?.user) {
+          await fetchUser(session.user.id, mounted);
+        } else if (event === 'SIGNED_OUT') {
+          setUser(null);
+          setLoading(false);
         }
       }
-    });
+    );
 
-    return () => subscription.unsubscribe();
-  }, [retryCount]);
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
-  const checkUser = async () => {
+  const fetchUser = async (userId: string, mounted: boolean) => {
     try {
-      console.log('🔍 Checking for existing session...');
-      const { data: { session }, error } = await supabase.auth.getSession();
-      
-      if (error) {
-        console.error('❌ Error getting session:', error);
-        setLoading(false);
-        return;
-      }
-      
-      console.log('📦 Existing session:', session?.user?.email || 'No session');
-      
-      if (session?.user) {
-        await fetchUserProfile(session.user.id);
-      } else {
-        setLoading(false);
-      }
-    } catch (error) {
-      console.error('❌ Error checking user session:', error);
-      setLoading(false);
-    }
-  };
-
-  const fetchUserProfile = async (userId: string, isRetry = false) => {
-    try {
-      console.log(`🔍 Fetching user profile for: ${userId} ${isRetry ? '(retry)' : ''}`);
+      console.log('👤 Fetching user profile for:', userId);
       
       const { data, error } = await supabase
         .from('users')
@@ -81,211 +79,118 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq('id', userId)
         .maybeSingle();
 
-      console.log('📦 Query result:', { data, error });
-
       if (error) {
-        console.error('❌ Error fetching user profile:', error);
-        
-        // If it's a permission error, try a different approach
-        if (error.code === '42501' || error.message.includes('permission denied')) {
-          console.log('🔄 Permission error detected, attempting direct insert without select...');
-          const session = await supabase.auth.getSession();
-          if (session.data.session?.user) {
-            await createUserFromAuth(session.data.session.user, true);
-          }
-        } 
-        // If user not found, create them
-        else if (error.code === 'PGRST116') {
-          console.log('🔄 User not found in database, creating...');
-          const session = await supabase.auth.getSession();
-          if (session.data.session?.user) {
-            await createUserFromAuth(session.data.session.user);
-          } else {
-            setLoading(false);
-          }
-        } else {
-          setLoading(false);
-        }
-      } else if (data) {
-        console.log('✅ User profile found:', data);
+        console.error('Error fetching user:', error);
+        if (mounted) setLoading(false);
+        return;
+      }
+
+      if (data && mounted) {
+        console.log('✅ User found:', data);
         setUser(data);
-        setLoading(false);
-        setRetryCount(0); // Reset retry count on success
-      } else {
-        // No data returned, user doesn't exist
-        console.log('🔄 No user profile found, creating...');
-        const session = await supabase.auth.getSession();
-        if (session.data.session?.user) {
-          await createUserFromAuth(session.data.session.user);
-        } else {
-          setLoading(false);
-        }
+      } else if (mounted) {
+        console.log('ℹ️ User not found in database');
+        // User authenticated but not in users table - create them
+        await createUser(sessionStorage.getItem('pendingAuthUser'), mounted);
       }
-    } catch (error) {
-      console.error('❌ Error in fetchUserProfile:', error);
       
-      // Retry logic for transient errors
-      if (retryCount < 3) {
-        console.log(`🔄 Retrying fetch (${retryCount + 1}/3)...`);
-        setRetryCount(prev => prev + 1);
-        setTimeout(() => fetchUserProfile(userId, true), 1000 * (retryCount + 1));
-      } else {
-        setLoading(false);
-        setRetryCount(0);
-      }
+      if (mounted) setLoading(false);
+    } catch (error) {
+      console.error('Error in fetchUser:', error);
+      if (mounted) setLoading(false);
     }
   };
 
-  const createUserFromAuth = async (authUser: any, bypassSelect = false) => {
+  const createUser = async (authUserJson: string | null, mounted: boolean) => {
     try {
-      console.log('🔄 Creating user from auth data:', authUser.email);
-      console.log('📦 Auth user metadata:', authUser.user_metadata);
-      
-      const fullName = authUser.user_metadata?.full_name || '';
-      const nameParts = fullName.split(' ');
-      const firstName = nameParts[0] || '';
-      const lastName = nameParts.slice(1).join(' ') || '';
+      if (!authUserJson) {
+        const { data } = await supabase.auth.getSession();
+        if (!data.session?.user) {
+          if (mounted) setLoading(false);
+          return;
+        }
+        authUserJson = JSON.stringify(data.session.user);
+      }
 
-      const username = authUser.email?.split('@')[0] || `user_${Date.now()}`;
+      const authUser = JSON.parse(authUserJson);
+      console.log('🔄 Creating user from auth:', authUser.email);
 
       const newUser = {
         id: authUser.id,
-        username: username,
+        username: authUser.email?.split('@')[0] || `user_${Date.now()}`,
         email: authUser.email,
-        first_name: firstName,
-        last_name: lastName,
-        avatar_url: authUser.user_metadata?.avatar_url,
         provider: 'google',
-        registered_at: new Date().toISOString(),
         balance: 0
       };
 
-      console.log('📝 Attempting to insert user:', newUser);
-
-      // Try insert with return data first
-      if (!bypassSelect) {
-        const { data, error } = await supabase
-          .from('users')
-          .insert([newUser])
-          .select()
-          .single();
-
-        if (!error && data) {
-          console.log('✅ User created successfully with select:', data);
-          setUser(data);
-          setLoading(false);
-          return;
-        } else {
-          console.log('⚠️ Insert with select failed:', error);
-        }
-      }
-
-      // Fallback: Insert without select
-      console.log('🔄 Trying insert without select...');
-      const { error: insertError } = await supabase
+      const { error } = await supabase
         .from('users')
         .insert([newUser]);
 
-      if (insertError) {
-        console.error('❌ Insert without select also failed:', insertError);
-        
-        // Try upsert as last resort
-        console.log('🔄 Trying upsert as last resort...');
-        const { error: upsertError } = await supabase
-          .from('users')
-          .upsert([newUser], { onConflict: 'id' });
-
-        if (upsertError) {
-          console.error('❌ Upsert also failed:', upsertError);
-          
-          // One more try - maybe the user already exists but we can't select it
-          console.log('🔄 Checking if user exists despite errors...');
-          const { data: existingUser, error: fetchError } = await supabase
-            .from('users')
-            .select('*')
-            .eq('id', authUser.id)
-            .maybeSingle();
-
-          if (!fetchError && existingUser) {
-            console.log('✅ User already exists:', existingUser);
-            setUser(existingUser);
-          } else {
-            console.error('❌ Could not retrieve or create user');
-          }
-        } else {
-          console.log('✅ Upsert successful');
-          // Try to fetch the user we just upserted
-          const { data: newData, error: fetchError } = await supabase
-            .from('users')
-            .select('*')
-            .eq('id', authUser.id)
-            .single();
-          
-          if (!fetchError && newData) {
-            setUser(newData);
-          }
-        }
-      } else {
-        console.log('✅ Insert without select succeeded');
-        // Fetch the user we just inserted
-        const { data: newData, error: fetchError } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', authUser.id)
-          .single();
-        
-        if (!fetchError && newData) {
-          setUser(newData);
-        }
+      if (error) {
+        console.error('Error creating user:', error);
+        if (mounted) setLoading(false);
+        return;
       }
+
+      // Fetch the newly created user
+      const { data } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', authUser.id)
+        .single();
+
+      if (data && mounted) {
+        setUser(data);
+      }
+      
+      if (mounted) setLoading(false);
     } catch (error) {
-      console.error('❌ Error in createUserFromAuth:', error);
-    } finally {
-      setLoading(false);
+      console.error('Error in createUser:', error);
+      if (mounted) setLoading(false);
     }
   };
 
-  const handleUserSession = async (authUser: any) => {
-    console.log('🔄 Handling user session for:', authUser.email);
-    await fetchUserProfile(authUser.id);
-  };
-
   const login = (userData: User) => {
-    console.log('🔑 Manual login:', userData.username);
     setUser(userData);
   };
 
   const logout = async () => {
     try {
-      console.log('👋 Logging out...');
       await supabase.auth.signOut();
       setUser(null);
     } catch (error) {
-      console.error('❌ Error logging out:', error);
+      console.error('Logout error:', error);
     }
   };
 
   const signInWithGoogle = async () => {
     try {
-      console.log('🔐 Initiating Google Sign-In...');
       setLoading(true);
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo: window.location.origin,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          }
         }
       });
       if (error) throw error;
     } catch (error) {
-      console.error('❌ Error signing in with Google:', error);
+      console.error('Google sign-in error:', error);
       setLoading(false);
-      throw error;
     }
   };
+
+  // Show loading only until initialized
+  if (!initialized) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600 mx-auto mb-4"></div>
+          <p className="text-gray-600 dark:text-gray-400">Loading application...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <AuthContext.Provider value={{ user, login, logout, signInWithGoogle, loading }}>
