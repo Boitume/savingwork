@@ -5,7 +5,7 @@ import FaceLogin from './components/FaceLogin';
 import FaceRegistration from './components/FaceRegistration';
 import Dashboard from './components/Dashboard';
 import { User } from './lib/supabase';
-import { Sun, Moon, Fingerprint } from 'lucide-react';
+import { Sun, Moon, Fingerprint, Smartphone, Key } from 'lucide-react';
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 
 function AppContent() {
@@ -14,6 +14,9 @@ function AppContent() {
   const [view, setView] = useState<'login' | 'register'>('login');
   const [googleLoading, setGoogleLoading] = useState(false);
   const [fingerprintLoading, setFingerprintLoading] = useState(false);
+  const [showFingerprintModal, setShowFingerprintModal] = useState(false);
+  const [fingerprintEmail, setFingerprintEmail] = useState('');
+  const [fingerprintStep, setFingerprintStep] = useState<'login' | 'register'>('login');
   const [devices, setDevices] = useState<any[]>([]);
   const [showDeviceManager, setShowDeviceManager] = useState(false);
 
@@ -53,6 +56,7 @@ function AppContent() {
     }
   };
 
+  // Handle fingerprint login
   const handleFingerprintLogin = async () => {
     try {
       setFingerprintLoading(true);
@@ -66,9 +70,11 @@ function AppContent() {
       
       const optsData = await optsResponse.json();
       
-      if (optsData.error) {
-        console.error('No fingerprint registered yet');
-        alert('No fingerprint registered. Please register one first.');
+      if (optsData.error || optsData === null) {
+        // No fingerprint registered - show registration modal
+        setFingerprintStep('register');
+        setShowFingerprintModal(true);
+        setFingerprintLoading(false);
         return;
       }
       
@@ -98,25 +104,35 @@ function AppContent() {
       alert('Fingerprint authentication failed');
     } finally {
       setFingerprintLoading(false);
+      setShowFingerprintModal(false);
     }
   };
 
-  const handleRegisterFingerprint = async () => {
-    if (!user) {
-      alert('Please login first to register fingerprint');
+  // Handle fingerprint registration
+  const handleFingerprintRegister = async () => {
+    if (!fingerprintEmail) {
+      alert('Please enter your email');
       return;
     }
-    
+
     try {
       setFingerprintLoading(true);
       
+      // First, check if user exists or create them
+      const { data: { session } } = await supabase.auth.signInWithOtp({
+        email: fingerprintEmail,
+        options: {
+          shouldCreateUser: true,
+        }
+      });
+
       // Step 1: Get registration options from server
       const optsResponse = await fetch('/api/webauthn/register/begin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: user.id,
-          username: user.username || user.email
+          userId: session?.user?.id || fingerprintEmail,
+          username: fingerprintEmail.split('@')[0]
         })
       });
       
@@ -136,7 +152,7 @@ function AppContent() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: user.id,
+          userId: session?.user?.id || fingerprintEmail,
           credential: attResp
         })
       });
@@ -145,8 +161,9 @@ function AppContent() {
       
       if (verifData.verified) {
         console.log('✅ Fingerprint registered successfully');
-        alert('Fingerprint registered successfully!');
-        fetchDevices(); // Refresh device list
+        alert('Fingerprint registered successfully! You can now login with your fingerprint.');
+        setShowFingerprintModal(false);
+        setFingerprintEmail('');
       } else {
         alert('Fingerprint registration failed');
       }
@@ -244,25 +261,16 @@ function AppContent() {
                 </div>
               )}
               
-              <div className="flex gap-2">
-                <button
-                  onClick={handleRegisterFingerprint}
-                  disabled={fingerprintLoading}
-                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium py-2 px-3 rounded-lg transition-colors disabled:bg-gray-400"
-                >
-                  {fingerprintLoading ? 'Scanning...' : 'Register New'}
-                </button>
-                <button
-                  onClick={() => setShowDeviceManager(false)}
-                  className={`flex-1 text-sm font-medium py-2 px-3 rounded-lg transition-colors ${
-                    theme === 'dark'
-                      ? 'bg-gray-700 hover:bg-gray-600 text-white'
-                      : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
-                  }`}
-                >
-                  Close
-                </button>
-              </div>
+              <button
+                onClick={() => setShowDeviceManager(false)}
+                className={`w-full text-sm font-medium py-2 px-3 rounded-lg transition-colors ${
+                  theme === 'dark'
+                    ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                    : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
+                }`}
+              >
+                Close
+              </button>
             </div>
           )}
         </div>
@@ -307,7 +315,7 @@ function AppContent() {
         </div>
 
         {/* Authentication Options Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           {/* Google Sign-In */}
           <button
             onClick={handleGoogleSignIn}
@@ -357,7 +365,92 @@ function AppContent() {
             </svg>
             <span>Face Login</span>
           </button>
+
+          {/* Register Fingerprint Button */}
+          <button
+            onClick={() => {
+              setFingerprintStep('register');
+              setShowFingerprintModal(true);
+            }}
+            className={`flex flex-col items-center gap-3 p-6 rounded-xl font-medium transition-all duration-200 ${
+              theme === 'dark'
+                ? 'bg-purple-900 text-white hover:bg-purple-800 border border-purple-700'
+                : 'bg-purple-100 text-purple-800 hover:bg-purple-200 border border-purple-300'
+            } shadow-md hover:scale-105`}
+          >
+            <Smartphone className="w-8 h-8" />
+            <span>Register Fingerprint</span>
+          </button>
         </div>
+
+        {/* Fingerprint Registration Modal */}
+        {showFingerprintModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className={`max-w-md w-full rounded-xl shadow-2xl p-6 ${
+              theme === 'dark' ? 'bg-gray-800' : 'bg-white'
+            }`}>
+              <h2 className={`text-2xl font-bold mb-4 ${
+                theme === 'dark' ? 'text-white' : 'text-gray-800'
+              }`}>
+                {fingerprintStep === 'login' ? 'Login with Fingerprint' : 'Register Fingerprint'}
+              </h2>
+              
+              <p className={`mb-4 text-sm ${
+                theme === 'dark' ? 'text-gray-300' : 'text-gray-600'
+              }`}>
+                {fingerprintStep === 'login' 
+                  ? 'Scan your fingerprint to login.' 
+                  : 'Enter your email to register your fingerprint. You can then login with your fingerprint anytime.'}
+              </p>
+              
+              {fingerprintStep === 'register' && (
+                <input
+                  type="email"
+                  value={fingerprintEmail}
+                  onChange={(e) => setFingerprintEmail(e.target.value)}
+                  placeholder="Enter your email"
+                  className={`w-full px-4 py-2 mb-4 rounded-lg border ${
+                    theme === 'dark'
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                />
+              )}
+              
+              <div className="flex gap-3">
+                <button
+                  onClick={fingerprintStep === 'login' ? handleFingerprintLogin : handleFingerprintRegister}
+                  disabled={fingerprintLoading}
+                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:bg-gray-400"
+                >
+                  {fingerprintLoading ? 'Processing...' : fingerprintStep === 'login' ? 'Scan Fingerprint' : 'Register'}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowFingerprintModal(false);
+                    setFingerprintEmail('');
+                  }}
+                  className={`flex-1 font-medium py-2 px-4 rounded-lg transition-colors ${
+                    theme === 'dark'
+                      ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                      : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
+                  }`}
+                >
+                  Cancel
+                </button>
+              </div>
+              
+              {fingerprintStep === 'login' && (
+                <button
+                  onClick={() => setFingerprintStep('register')}
+                  className="mt-3 text-sm text-purple-600 hover:text-purple-800 dark:text-purple-400"
+                >
+                  Don't have fingerprint registered? Register here
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Divider */}
         <div className="flex items-center justify-center gap-3 mb-6">
@@ -366,43 +459,39 @@ function AppContent() {
           <div className={`h-px w-24 ${theme === 'dark' ? 'bg-gray-700' : 'bg-gray-300'}`}></div>
         </div>
 
-        {/* Face Auth Tabs (shown only when face login is selected) */}
-        {view === 'login' || view === 'register' ? (
-          <>
-            <div className="flex justify-center gap-4 mb-8">
-              <button
-                onClick={() => setView('login')}
-                className={`px-6 py-2 rounded-lg font-medium transition-colors duration-200 ${
-                  view === 'login'
-                    ? 'bg-green-600 text-white'
-                    : theme === 'dark'
-                      ? 'bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700'
-                      : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-                }`}
-              >
-                Face Login
-              </button>
-              <button
-                onClick={() => setView('register')}
-                className={`px-6 py-2 rounded-lg font-medium transition-colors duration-200 ${
-                  view === 'register'
-                    ? 'bg-blue-600 text-white'
-                    : theme === 'dark'
-                      ? 'bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700'
-                      : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-                }`}
-              >
-                Face Register
-              </button>
-            </div>
+        {/* Face Auth Tabs */}
+        <div className="flex justify-center gap-4 mb-8">
+          <button
+            onClick={() => setView('login')}
+            className={`px-6 py-2 rounded-lg font-medium transition-colors duration-200 ${
+              view === 'login'
+                ? 'bg-green-600 text-white'
+                : theme === 'dark'
+                  ? 'bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700'
+                  : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
+            }`}
+          >
+            Face Login
+          </button>
+          <button
+            onClick={() => setView('register')}
+            className={`px-6 py-2 rounded-lg font-medium transition-colors duration-200 ${
+              view === 'register'
+                ? 'bg-blue-600 text-white'
+                : theme === 'dark'
+                  ? 'bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700'
+                  : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
+            }`}
+          >
+            Face Register
+          </button>
+        </div>
 
-            {view === 'login' ? (
-              <FaceLogin onSuccess={handleLoginSuccess} />
-            ) : (
-              <FaceRegistration onSuccess={handleRegisterSuccess} />
-            )}
-          </>
-        ) : null}
+        {view === 'login' ? (
+          <FaceLogin onSuccess={handleLoginSuccess} />
+        ) : (
+          <FaceRegistration onSuccess={handleRegisterSuccess} />
+        )}
 
         {/* Footer */}
         <div className={`mt-8 text-center text-sm ${
