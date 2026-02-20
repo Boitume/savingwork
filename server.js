@@ -6,6 +6,12 @@ import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { 
+  generateRegistrationOptions, 
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse 
+} from '@simplewebauthn/server';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,7 +45,10 @@ const envVars = [
   'PAYFAST_BASE_URL',
   'APP_BASE_URL',
   'VITE_BACKEND_URL',
-  'CONTACT_EMAIL'
+  'CONTACT_EMAIL',
+  'RP_ID',
+  'RP_NAME',
+  'ORIGIN'
 ];
 
 envVars.forEach(key => {
@@ -135,6 +144,329 @@ const supabase = createClient(
 
 console.log('✅ Supabase client initialized');
 
+// ============ WEBAUTHN (FINGERPRINT) CONFIGURATION ============
+// Store challenges temporarily (use Redis in production)
+const challenges = new Map();
+
+// Relying Party configuration
+const rpID = process.env.RP_ID || (isProduction ? 'savingwork.onrender.com' : 'localhost');
+const expectedOrigin = process.env.ORIGIN || (isProduction ? 'https://savingwork.onrender.com' : 'http://localhost:5173');
+const rpName = process.env.RP_NAME || 'Face Recognition App';
+
+console.log(`🔐 WebAuthn configured with RP ID: ${rpID}, Origin: ${expectedOrigin}`);
+
+// ============ WEBAUTHN ENDPOINTS ============
+
+// ✅ Get registration options (start fingerprint registration)
+app.post('/api/webauthn/register/begin', async (req, res) => {
+  try {
+    const { userId, username } = req.body;
+    
+    if (!userId || !username) {
+      return res.status(400).json({ error: 'Missing userId or username' });
+    }
+
+    console.log(`🔐 Starting WebAuthn registration for user: ${username} (${userId})`);
+
+    // Get existing credentials for this user
+    const { data: existingCredentials } = await supabase
+      .from('user_credentials')
+      .select('credential_id')
+      .eq('user_id', userId);
+
+    const excludeCredentials = existingCredentials?.map(cred => ({
+      id: Buffer.from(cred.credential_id, 'base64'),
+      type: 'public-key',
+      transports: ['internal', 'hybrid', 'usb', 'nfc', 'ble'],
+    })) || [];
+
+    // Generate registration options
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID,
+      userID: userId,
+      userName: username,
+      userDisplayName: username,
+      attestationType: 'none',
+      excludeCredentials,
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform', // Use phone's built-in biometrics
+        userVerification: 'required',
+        residentKey: 'preferred',
+      },
+      supportedAlgorithmIDs: [-7, -257], // ES256 and RS256
+    });
+
+    // Store challenge for later verification
+    challenges.set(userId, {
+      challenge: options.challenge,
+      timestamp: Date.now()
+    });
+
+    console.log(`✅ Registration options generated for user: ${userId}`);
+    res.json(options);
+  } catch (error) {
+    console.error('❌ WebAuthn registration begin error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ Complete registration (verify fingerprint)
+app.post('/api/webauthn/register/complete', async (req, res) => {
+  try {
+    const { userId, credential } = req.body;
+    
+    if (!userId || !credential) {
+      return res.status(400).json({ error: 'Missing userId or credential' });
+    }
+
+    console.log(`🔐 Completing WebAuthn registration for user: ${userId}`);
+
+    // Get stored challenge
+    const storedData = challenges.get(userId);
+    if (!storedData) {
+      return res.status(400).json({ error: 'No registration session found' });
+    }
+
+    // Verify the registration response
+    const verification = await verifyRegistrationResponse({
+      response: credential,
+      expectedChallenge: storedData.challenge,
+      expectedOrigin,
+      expectedRPID: rpID,
+      requireUserVerification: true,
+    });
+
+    const { verified, registrationInfo } = verification;
+
+    if (verified && registrationInfo) {
+      // Store credential in database
+      const { error: dbError } = await supabase
+        .from('user_credentials')
+        .insert({
+          user_id: userId,
+          credential_id: Buffer.from(registrationInfo.credentialID).toString('base64'),
+          public_key: registrationInfo.credentialPublicKey.toString('base64'),
+          counter: registrationInfo.counter,
+          device_type: registrationInfo.credentialDeviceType,
+          backed_up: registrationInfo.credentialBackedUp,
+          transports: credential.response.transports || ['internal'],
+          created_at: new Date().toISOString()
+        });
+
+      if (dbError) {
+        console.error('❌ Failed to store credential:', dbError);
+        return res.status(500).json({ error: 'Failed to store credential' });
+      }
+
+      console.log(`✅ WebAuthn registration successful for user: ${userId}`);
+      
+      // Clear challenge
+      challenges.delete(userId);
+      
+      res.json({ 
+        verified: true,
+        credentialID: registrationInfo.credentialID
+      });
+    } else {
+      console.log('❌ WebAuthn registration verification failed');
+      res.status(400).json({ verified: false });
+    }
+  } catch (error) {
+    console.error('❌ WebAuthn registration complete error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ Get authentication options (start fingerprint login)
+app.post('/api/webauthn/login/begin', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    console.log(`🔐 Starting WebAuthn authentication for user: ${userId || 'any'}`);
+
+    // If userId is provided, get only their credentials
+    let query = supabase.from('user_credentials').select('*');
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+    
+    const { data: credentials, error: dbError } = await query;
+
+    if (dbError) {
+      console.error('❌ Failed to fetch credentials:', dbError);
+      return res.status(500).json({ error: 'Failed to fetch credentials' });
+    }
+
+    if (!credentials || credentials.length === 0) {
+      return res.status(404).json({ error: 'No credentials found for user' });
+    }
+
+    // Format credentials for WebAuthn
+    const allowCredentials = credentials.map(cred => ({
+      id: Buffer.from(cred.credential_id, 'base64'),
+      type: 'public-key',
+      transports: cred.transports || ['internal', 'hybrid', 'usb', 'nfc', 'ble'],
+    }));
+
+    // Generate authentication options
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials,
+      userVerification: 'required',
+    });
+
+    // Store challenge for later verification (keyed by challenge)
+    const challengeId = crypto.randomBytes(16).toString('hex');
+    challenges.set(challengeId, {
+      challenge: options.challenge,
+      userId: userId || 'any',
+      timestamp: Date.now()
+    });
+
+    console.log(`✅ Authentication options generated with challenge ID: ${challengeId}`);
+    res.json({ ...options, challengeId });
+  } catch (error) {
+    console.error('❌ WebAuthn authentication begin error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ Complete authentication (verify fingerprint login)
+app.post('/api/webauthn/login/complete', async (req, res) => {
+  try {
+    const { credential, challengeId } = req.body;
+    
+    if (!credential || !challengeId) {
+      return res.status(400).json({ error: 'Missing credential or challengeId' });
+    }
+
+    console.log(`🔐 Completing WebAuthn authentication, challenge ID: ${challengeId}`);
+
+    // Get stored challenge
+    const storedData = challenges.get(challengeId);
+    if (!storedData) {
+      return res.status(400).json({ error: 'No authentication session found' });
+    }
+
+    // Get the credential from database
+    const credentialId = Buffer.from(credential.id, 'base64').toString('base64');
+    const { data: storedCredential, error: dbError } = await supabase
+      .from('user_credentials')
+      .select('*')
+      .eq('credential_id', credentialId)
+      .single();
+
+    if (dbError || !storedCredential) {
+      console.error('❌ Credential not found:', dbError);
+      return res.status(404).json({ error: 'Credential not found' });
+    }
+
+    // Verify the authentication response
+    const verification = await verifyAuthenticationResponse({
+      response: credential,
+      expectedChallenge: storedData.challenge,
+      expectedOrigin,
+      expectedRPID: rpID,
+      credential: {
+        id: storedCredential.credential_id,
+        publicKey: Buffer.from(storedCredential.public_key, 'base64'),
+        counter: storedCredential.counter,
+        transports: storedCredential.transports,
+      },
+      requireUserVerification: true,
+    });
+
+    const { verified, authenticationInfo } = verification;
+
+    if (verified && authenticationInfo) {
+      // Update counter
+      await supabase
+        .from('user_credentials')
+        .update({ 
+          counter: authenticationInfo.newCounter,
+          last_used: new Date().toISOString()
+        })
+        .eq('credential_id', credentialId);
+
+      // Get user info
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', storedCredential.user_id)
+        .single();
+
+      if (userError) {
+        console.error('❌ Failed to get user:', userError);
+        return res.status(500).json({ error: 'Failed to get user' });
+      }
+
+      console.log(`✅ WebAuthn authentication successful for user: ${storedCredential.user_id}`);
+      
+      // Clear challenge
+      challenges.delete(challengeId);
+      
+      res.json({ 
+        verified: true,
+        user
+      });
+    } else {
+      console.log('❌ WebAuthn authentication verification failed');
+      res.status(400).json({ verified: false });
+    }
+  } catch (error) {
+    console.error('❌ WebAuthn authentication complete error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ Get user's registered devices
+app.get('/api/webauthn/devices/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const { data: devices, error } = await supabase
+      .from('user_credentials')
+      .select('id, device_type, backed_up, created_at, last_used, transports')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Failed to fetch devices:', error);
+      return res.status(500).json({ error: 'Failed to fetch devices' });
+    }
+
+    res.json({ devices });
+  } catch (error) {
+    console.error('❌ Error fetching devices:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ Remove a device
+app.delete('/api/webauthn/devices/:deviceId', async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const { userId } = req.body;
+
+    const { error } = await supabase
+      .from('user_credentials')
+      .delete()
+      .eq('id', deviceId)
+      .eq('user_id', userId); // Ensure user owns this device
+
+    if (error) {
+      console.error('❌ Failed to delete device:', error);
+      return res.status(500).json({ error: 'Failed to delete device' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error deleting device:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ✅ Health check
 app.get("/api/health", (req, res) => {
   res.json({ 
@@ -146,147 +478,14 @@ app.get("/api/health", (req, res) => {
       supabase: process.env.VITE_SUPABASE_URL ? 'Connected' : 'Disconnected',
       payfast: process.env.PAYFAST_MERCHANT_ID ? 'Configured' : 'Not configured',
       mode: process.env.PAYFAST_BASE_URL?.includes('sandbox') ? 'SANDBOX' : 'LIVE',
-      appBaseUrl: process.env.APP_BASE_URL
-    }
-  });
-});
-
-// ============ TEST ENDPOINTS ============
-
-// Simple ping
-app.get("/api/ping", (req, res) => {
-  res.json({ message: "pong", time: Date.now() });
-});
-
-// PayFast ping
-app.get("/api/payfast/ping", (req, res) => {
-  res.json({ message: "PayFast router is working" });
-});
-
-// Simple test endpoint
-app.get("/api/payfast/test-simple", (req, res) => {
-  res.json({ 
-    message: "PayFast test endpoint",
-    merchant_id: process.env.PAYFAST_MERCHANT_ID,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Debug endpoint - shows all credentials
-app.get("/api/payfast/debug", (req, res) => {
-  res.json({
-    success: true,
-    credentials: {
-      merchant_id: process.env.PAYFAST_MERCHANT_ID,
-      merchant_key_exists: !!process.env.PAYFAST_MERCHANT_KEY,
-      passphrase_exists: !!process.env.PAYFAST_PASSPHRASE,
-      base_url: process.env.PAYFAST_BASE_URL,
-      app_url: process.env.APP_BASE_URL
-    },
-    server: {
-      port: PORT,
-      time: new Date().toISOString()
-    }
-  });
-});
-
-// ============ ULTIMATE PAYFAST DEBUGGER ============
-app.get("/api/payfast/ultimate-debug", (req, res) => {
-  try {
-    console.log('\n' + '🔬'.repeat(40));
-    console.log('🔬 ULTIMATE PAYFAST DEBUGGER');
-    console.log('🔬'.repeat(40));
-    
-    // Step 1: Show raw environment variables
-    console.log('\n📋 ENVIRONMENT VARIABLES:');
-    console.log(`PAYFAST_MERCHANT_ID: "${process.env.PAYFAST_MERCHANT_ID}" (length: ${process.env.PAYFAST_MERCHANT_ID?.length})`);
-    console.log(`PAYFAST_MERCHANT_KEY: "${process.env.PAYFAST_MERCHANT_KEY?.substring(0, 3)}..." (length: ${process.env.PAYFAST_MERCHANT_KEY?.length})`);
-    console.log(`PAYFAST_PASSPHRASE: "${process.env.PAYFAST_PASSPHRASE?.substring(0, 3)}..." (length: ${process.env.PAYFAST_PASSPHRASE?.length})`);
-    console.log(`PAYFAST_BASE_URL: ${process.env.PAYFAST_BASE_URL}`);
-    console.log(`APP_BASE_URL: ${process.env.APP_BASE_URL}`);
-
-    // Step 2: Create test data with explicit string values
-    const testData = {
-      merchant_id: String(process.env.PAYFAST_MERCHANT_ID || '').trim(),
-      merchant_key: String(process.env.PAYFAST_MERCHANT_KEY || '').trim(),
-      return_url: String(`${process.env.APP_BASE_URL}/payment/success`).trim(),
-      cancel_url: String(`${process.env.APP_BASE_URL}/payment/cancel`).trim(),
-      notify_url: String(`${process.env.APP_BASE_URL}/payfast/notify`).trim(),
-      m_payment_id: `test_${Date.now()}`,
-      amount: "100.00",
-      item_name: "Savings Deposit",
-      custom_str1: "test_user_123"
-    };
-
-    console.log('\n📦 TEST DATA (raw):');
-    Object.keys(testData).forEach(key => {
-      const value = testData[key];
-      console.log(`   ${key}: "${value}" (${typeof value}, length: ${value.length})`);
-    });
-
-    // Step 3: Build parameter string PRESERVING ORDER
-    console.log('\n🔑 PARAMETER ORDER (preserved):', Object.keys(testData));
-    
-    const paramPairs = [];
-    for (const key of Object.keys(testData)) { // NO SORTING!
-      const rawValue = testData[key];
-      let encodedValue = encodeURIComponent(rawValue);
-      encodedValue = encodedValue.replace(/%20/g, '+');
-      paramPairs.push(`${key}=${encodedValue}`);
-      console.log(`   ${key}=${encodedValue}`);
-    }
-    
-    const paramString = paramPairs.join('&');
-    console.log('\n📝 PARAMETER STRING:');
-    console.log(paramString);
-
-    // Step 4: Add passphrase
-    const passphrase = String(process.env.PAYFAST_PASSPHRASE || '').trim();
-    const stringToHash = paramString + `&passphrase=${passphrase}`;
-    console.log('\n🔐 STRING TO HASH:');
-    console.log(stringToHash);
-
-    // Step 5: Generate MD5 hash
-    const signature = crypto.createHash('md5').update(stringToHash).digest('hex');
-    console.log('\n✅ GENERATED SIGNATURE:', signature);
-
-    // Step 6: Build complete URL
-    const finalData = { ...testData, signature };
-    const finalPairs = [];
-    for (const key of Object.keys(finalData)) { // PRESERVE ORDER
-      finalPairs.push(`${encodeURIComponent(key)}=${encodeURIComponent(finalData[key])}`);
-    }
-    const finalUrl = `${process.env.PAYFAST_BASE_URL}?${finalPairs.join('&')}`;
-
-    console.log('\n🔗 COMPLETE URL (for testing):');
-    console.log(finalUrl);
-    
-    console.log('\n🔬'.repeat(40) + '\n');
-
-    res.json({
-      success: true,
-      debug: {
-        environment: {
-          merchant_id: process.env.PAYFAST_MERCHANT_ID,
-          merchant_key_length: process.env.PAYFAST_MERCHANT_KEY?.length,
-          passphrase_length: process.env.PAYFAST_PASSPHRASE?.length,
-          base_url: process.env.PAYFAST_BASE_URL,
-          app_url: process.env.APP_BASE_URL
-        },
-        signature_generation: {
-          param_order: Object.keys(testData),
-          param_string: paramString,
-          string_hashed: stringToHash,
-          signature: signature
-        },
-        test_url: finalUrl
+      appBaseUrl: process.env.APP_BASE_URL,
+      webauthn: {
+        rpID,
+        origin: expectedOrigin,
+        configured: true
       }
-    });
-
-  } catch (error) {
-    console.error('❌ Debug error:', error);
-    res.status(500).json({ error: error.message });
-  }
+    }
+  });
 });
 
 // ============ PAYFAST SIGNATURE GENERATOR - PRESERVES ORDER ============
@@ -1346,6 +1545,12 @@ app.get("/api/diagnostic", async (req, res) => {
         configured: !!process.env.PAYFAST_MERCHANT_ID,
         merchant_id: process.env.PAYFAST_MERCHANT_ID,
         base_url: process.env.PAYFAST_BASE_URL
+      },
+      webauthn: {
+        configured: true,
+        rpID,
+        origin: expectedOrigin,
+        rpName
       }
     };
 
@@ -1392,7 +1597,9 @@ app.get("/api/diagnostic", async (req, res) => {
       instructions: {
         test_webhook: `/api/payfast/test-notify?userId=YOUR_USER_ID&amount=100`,
         use_simple_webhook: `/api/payfast/notify-simple`,
-        check_rpc: `/api/check-rpc`
+        check_rpc: `/api/check-rpc`,
+        webauthn_register: `POST /api/webauthn/register/begin with { userId, username }`,
+        webauthn_login: `POST /api/webauthn/login/begin with optional { userId }`
       }
     });
 
@@ -1497,8 +1704,18 @@ app.listen(PORT, () => {
   console.log(`💰 PayFast: ${process.env.PAYFAST_BASE_URL?.includes('sandbox') ? 'SANDBOX' : 'LIVE'}`);
   console.log(`🆔 Merchant ID: ${process.env.PAYFAST_MERCHANT_ID}`);
   console.log(`🌍 Mode: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
+  console.log(`🔐 WebAuthn: Configured with RP ID: ${rpID}`);
   console.log('='.repeat(60));
   console.log(`📝 API Endpoints:`);
+  console.log(`   🔐 WEBAUTHN (FINGERPRINT):`);
+  console.log(`   POST /api/webauthn/register/begin - Start fingerprint registration`);
+  console.log(`   POST /api/webauthn/register/complete - Complete fingerprint registration`);
+  console.log(`   POST /api/webauthn/login/begin - Start fingerprint login`);
+  console.log(`   POST /api/webauthn/login/complete - Complete fingerprint login`);
+  console.log(`   GET  /api/webauthn/devices/:userId - List user's registered devices`);
+  console.log(`   DELETE /api/webauthn/devices/:deviceId - Remove a device`);
+  console.log('   ' + '-'.repeat(40));
+  console.log(`   💰 PAYFAST:`);
   console.log(`   GET  http://localhost:${PORT}/api/health`);
   console.log(`   GET  http://localhost:${PORT}/api/diagnostic`);
   console.log(`   GET  http://localhost:${PORT}/api/check-rpc`);
