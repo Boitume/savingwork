@@ -222,13 +222,14 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
   }
 });
 
-// ✅ COMPLETE REGISTRATION (create new user) - FIXED with null checks
+// ✅ COMPLETE REGISTRATION (create new user) - FULLY FIXED with null checks
 app.post('/api/webauthn/register/complete', async (req, res) => {
   try {
     const { credential, challengeId } = req.body;
     
     console.log('\n🔐 REGISTRATION COMPLETE - START');
     console.log('Challenge ID:', challengeId);
+    console.log('Credential received:', credential ? 'Yes' : 'No');
     
     if (!credential || !challengeId) {
       console.error('❌ Missing credential or challengeId');
@@ -241,6 +242,11 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
       return res.status(400).json({ error: 'Invalid credential: missing id' });
     }
 
+    if (!credential.response) {
+      console.error('❌ Credential missing response field');
+      return res.status(400).json({ error: 'Invalid credential: missing response' });
+    }
+
     console.log('Credential ID received:', credential.id.substring(0, 20) + '...');
 
     const storedData = challenges.get(challengeId);
@@ -251,6 +257,7 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
     }
 
     console.log('Stored data found for user:', storedData.tempUsername);
+    console.log('Expected challenge:', storedData.challenge.substring(0, 20) + '...');
 
     const verification = await verifyRegistrationResponse({
       response: credential,
@@ -260,12 +267,59 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
       requireUserVerification: true,
     });
 
+    console.log('Verification result:', { 
+      verified: verification.verified, 
+      hasRegistrationInfo: !!verification.registrationInfo 
+    });
+
     const { verified, registrationInfo } = verification;
 
     if (verified && registrationInfo) {
       console.log('✅ Registration verified successfully');
 
+      // Check if registrationInfo has the required fields
+      if (!registrationInfo.credentialID) {
+        console.error('❌ Registration info missing credentialID');
+        return res.status(500).json({ error: 'Invalid registration data: missing credential ID' });
+      }
+
+      if (!registrationInfo.credentialPublicKey) {
+        console.error('❌ Registration info missing credentialPublicKey');
+        return res.status(500).json({ error: 'Invalid registration data: missing public key' });
+      }
+
+      console.log('CredentialID type:', typeof registrationInfo.credentialID);
+      console.log('CredentialID is Buffer?', Buffer.isBuffer(registrationInfo.credentialID));
+
+      // Safely convert credentialID to base64
+      let credentialIdBase64;
+      try {
+        // Ensure we have a Buffer
+        const credentialIDBuffer = Buffer.isBuffer(registrationInfo.credentialID) 
+          ? registrationInfo.credentialID 
+          : Buffer.from(registrationInfo.credentialID);
+        credentialIdBase64 = credentialIDBuffer.toString('base64');
+        console.log('✅ CredentialID converted to base64 successfully');
+      } catch (bufferError) {
+        console.error('❌ Failed to convert credentialID to base64:', bufferError);
+        return res.status(500).json({ error: 'Failed to process credential ID' });
+      }
+
+      // Safely convert publicKey to base64
+      let publicKeyBase64;
+      try {
+        const publicKeyBuffer = Buffer.isBuffer(registrationInfo.credentialPublicKey)
+          ? registrationInfo.credentialPublicKey
+          : Buffer.from(registrationInfo.credentialPublicKey);
+        publicKeyBase64 = publicKeyBuffer.toString('base64');
+        console.log('✅ PublicKey converted to base64 successfully');
+      } catch (bufferError) {
+        console.error('❌ Failed to convert publicKey to base64:', bufferError);
+        return res.status(500).json({ error: 'Failed to process public key' });
+      }
+
       // Create a new user in the database
+      console.log('Creating new user:', storedData.tempUsername);
       const { data: newUser, error: userError } = await supabase
         .from('users')
         .insert({
@@ -285,18 +339,15 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
       console.log('✅ User created:', newUser.id);
 
       // Store credential in database
-      const credentialIdBase64 = Buffer.from(registrationInfo.credentialID).toString('base64');
-      const publicKeyBase64 = registrationInfo.credentialPublicKey.toString('base64');
-      
       const { error: dbError } = await supabase
         .from('user_credentials')
         .insert({
           user_id: newUser.id,
           credential_id: credentialIdBase64,
           public_key: publicKeyBase64,
-          counter: registrationInfo.counter,
-          device_type: registrationInfo.credentialDeviceType,
-          backed_up: registrationInfo.credentialBackedUp,
+          counter: registrationInfo.counter || 0,
+          device_type: registrationInfo.credentialDeviceType || 'unknown',
+          backed_up: registrationInfo.credentialBackedUp || false,
           transports: credential.response?.transports || ['internal'],
           created_at: new Date().toISOString()
         });
@@ -309,6 +360,7 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
       console.log('✅ Credential stored successfully');
       
       challenges.delete(challengeId);
+      console.log('🧹 Challenge deleted');
       
       res.json({ 
         verified: true,
@@ -316,10 +368,15 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
       });
     } else {
       console.log('❌ WebAuthn registration verification failed');
-      res.status(400).json({ verified: false });
+      res.status(400).json({ verified: false, error: 'Verification failed' });
     }
   } catch (error) {
     console.error('❌ WebAuthn registration complete error:', error);
+    console.error('Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -410,6 +467,16 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
 
     console.log('✅ Credential found for user:', storedCredential.users.id);
 
+    // Safely convert publicKey from base64 to Buffer
+    let publicKeyBuffer;
+    try {
+      publicKeyBuffer = Buffer.from(storedCredential.public_key, 'base64');
+      console.log('✅ PublicKey converted successfully');
+    } catch (bufferError) {
+      console.error('❌ Failed to convert publicKey from base64:', bufferError);
+      return res.status(500).json({ error: 'Failed to process public key' });
+    }
+
     const verification = await verifyAuthenticationResponse({
       response: credential,
       expectedChallenge: storedData.challenge,
@@ -417,9 +484,9 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
       expectedRPID: rpID,
       credential: {
         id: storedCredential.credential_id,
-        publicKey: Buffer.from(storedCredential.public_key, 'base64'),
-        counter: storedCredential.counter,
-        transports: storedCredential.transports,
+        publicKey: publicKeyBuffer,
+        counter: storedCredential.counter || 0,
+        transports: storedCredential.transports || ['internal'],
       },
       requireUserVerification: true,
     });
