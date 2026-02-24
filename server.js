@@ -158,6 +158,7 @@ console.log(`🔐 WebAuthn configured with RP ID: ${rpID}, Origin: ${expectedOri
 // ✅ CHECK IF ANY DEVICES EXIST
 app.get('/api/webauthn/has-devices', async (req, res) => {
   try {
+    console.log('🔍 Checking for registered devices...');
     const { count, error } = await supabase
       .from('user_credentials')
       .select('*', { count: 'exact', head: true });
@@ -167,6 +168,7 @@ app.get('/api/webauthn/has-devices', async (req, res) => {
       return res.status(500).json({ error: 'Failed to check devices' });
     }
 
+    console.log(`📊 Device count: ${count}`);
     res.json({ hasDevices: count > 0 });
   } catch (error) {
     console.error('❌ Error checking devices:', error);
@@ -174,7 +176,7 @@ app.get('/api/webauthn/has-devices', async (req, res) => {
   }
 });
 
-// ✅ REGISTRATION BEGIN - FOR NEW USERS (no userId required)
+// ✅ REGISTRATION BEGIN - FOR NEW USERS (FIXED FOR v10+)
 app.post('/api/webauthn/register/begin', async (req, res) => {
   try {
     console.log('🔐 Starting WebAuthn registration for new user');
@@ -183,10 +185,14 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
     const tempUserId = `temp_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
     const tempUsername = `user_${Date.now().toString().slice(-6)}`;
 
+    // 🔴 FIX: Convert string to Buffer/Uint8Array for v10+ compatibility
+    const userIDBuffer = Buffer.from(tempUserId, 'utf8');
+    
     const options = await generateRegistrationOptions({
       rpName,
       rpID,
-      userID: tempUserId,
+      // Use Uint8Array instead of string
+      userID: userIDBuffer,
       userName: tempUsername,
       userDisplayName: 'User',
       attestationType: 'none',
@@ -201,7 +207,7 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
     const challengeId = crypto.randomBytes(16).toString('hex');
     challenges.set(challengeId, {
       challenge: options.challenge,
-      tempUserId,
+      tempUserId, // Store the original string for later use
       tempUsername,
       timestamp: Date.now()
     });
