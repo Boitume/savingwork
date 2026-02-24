@@ -481,46 +481,127 @@ app.get("/api/diagnostic", async (req, res) => {
   }
 });
 
-// ============ SERVE FRONTEND STATIC FILES ============
+// ============ SERVE FRONTEND STATIC FILES - UPDATED ============
 const distPath = path.join(__dirname, 'dist');
 
 if (isProduction) {
   console.log(`\n📦 Production mode: Serving static files from ${distPath}`);
   
+  // Check if dist folder exists
   if (fs.existsSync(distPath)) {
+    // Serve static files
     app.use(express.static(distPath));
     
-    app.use((req, res, next) => {
+    // Log dist contents for debugging
+    try {
+      const files = fs.readdirSync(distPath);
+      console.log('📄 Files in dist:', files.join(', '));
+      
+      // Check for index.html specifically
+      if (files.includes('index.html')) {
+        console.log('✅ index.html found in dist');
+      } else {
+        console.error('❌ index.html NOT found in dist!');
+      }
+    } catch (e) {
+      console.error('❌ Cannot read dist folder:', e.message);
+    }
+    
+    // CRITICAL FIX: Handle all non-API routes by serving index.html
+    app.get('*', (req, res, next) => {
+      // Skip API routes
       if (req.path.startsWith('/api')) {
         return next();
       }
-      res.sendFile(path.join(distPath, 'index.html'));
+      
+      // Serve index.html for client-side routing
+      const indexPath = path.join(distPath, 'index.html');
+      
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        console.error('❌ index.html not found at:', indexPath);
+        res.status(500).send(`
+          <html>
+            <head><title>Error</title></head>
+            <body>
+              <h1>Frontend build not found</h1>
+              <p>Please run <code>npm run build</code> to build the frontend.</p>
+              <p>Dist path: ${distPath}</p>
+            </body>
+          </html>
+        `);
+      }
     });
     
-    console.log('✅ Static file serving enabled');
+    console.log('✅ Static file serving enabled with client-side routing');
   } else {
-    console.error('❌ dist folder not found! Run npm run build first');
+    console.error('❌ dist folder not found at:', distPath);
+    console.error('📁 Current directory:', __dirname);
+    
+    // List files in current directory for debugging
+    try {
+      const files = fs.readdirSync(__dirname);
+      console.log('📁 Files in current directory:', files.join(', '));
+    } catch (e) {
+      console.error('❌ Cannot read current directory:', e.message);
+    }
+    
+    // Serve a helpful error page
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api')) return next();
+      
+      res.status(500).send(`
+        <html>
+          <head><title>Build Error</title></head>
+          <body>
+            <h1>Frontend build not found</h1>
+            <p>The dist folder does not exist. Please run <code>npm run build</code> to build the frontend.</p>
+            <p>Expected path: ${distPath}</p>
+          </body>
+        </html>
+      `);
+    });
   }
 } else {
   console.log(`\n🔄 Development mode: API only, frontend running on Vite dev server`);
+  
+  // In development, just handle API routes
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api')) {
+      return res.status(404).json({ 
+        error: 'In development mode, please use the Vite dev server on http://localhost:5173' 
+      });
+    }
+    next();
+  });
 }
 
 // ============ ERROR HANDLING ============
-app.use((req, res) => {
+app.use((req, res, next) => {
+  // Only handle 404 for API routes
   if (req.path.startsWith('/api')) {
     res.status(404).json({ 
       error: "API endpoint not found", 
       path: req.url
     });
+  } else {
+    next();
   }
 });
 
 app.use((err, req, res, next) => {
   console.error("❌ Unhandled error:", err);
-  res.status(500).json({ 
-    error: "Internal server error",
-    message: err.message 
-  });
+  
+  // Don't send HTML errors for API routes
+  if (req.path.startsWith('/api')) {
+    res.status(500).json({ 
+      error: "Internal server error",
+      message: err.message 
+    });
+  } else {
+    next(err);
+  }
 });
 
 // ============ START SERVER ============
@@ -542,5 +623,12 @@ app.listen(PORT, () => {
   console.log(`   POST /api/webauthn/login/complete`);
   console.log(`   GET  /api/webauthn/devices/:userId`);
   console.log(`   DELETE /api/webauthn/devices/:deviceId`);
+  
+  if (isProduction) {
+    console.log(`\n🌐 Frontend URL: ${process.env.APP_BASE_URL || 'http://localhost:' + PORT}`);
+    console.log(`📁 Serving static files from: ${distPath}`);
+  } else {
+    console.log(`\n🎨 Frontend (development): http://localhost:5173`);
+  }
   console.log('='.repeat(60) + '\n');
 });
