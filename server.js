@@ -176,7 +176,7 @@ app.get('/api/webauthn/has-devices', async (req, res) => {
   }
 });
 
-// ✅ REGISTRATION BEGIN - FOR NEW USERS (FIXED FOR v10+)
+// ✅ REGISTRATION BEGIN - FOR NEW USERS
 app.post('/api/webauthn/register/begin', async (req, res) => {
   try {
     console.log('🔐 Starting WebAuthn registration for new user');
@@ -222,7 +222,7 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
   }
 });
 
-// ✅ COMPLETE REGISTRATION - PERMANENT FIX WITH MULTIPLE FALLBACKS
+// ✅ COMPLETE REGISTRATION - PERMANENT FIX WITH DATABASE SCHEMA COMPATIBILITY
 app.post('/api/webauthn/register/complete', async (req, res) => {
   try {
     const { credential, challengeId } = req.body;
@@ -277,7 +277,7 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
     if (verified) {
       console.log('✅ Registration verified successfully');
       
-      // === PERMANENT FIX: Extract credential data from multiple possible locations ===
+      // === EXTRACT CREDENTIAL DATA FROM MULTIPLE POSSIBLE LOCATIONS ===
       let rawCredentialID = null;
       let rawPublicKey = null;
       let counter = 0;
@@ -286,7 +286,7 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
       
       // Method 1: Standard SimpleWebAuthn v10+ format
       if (registrationInfo) {
-        console.log('📦 Using registrationInfo format (SimpleWebAuthn v10+)');
+        console.log('📦 Using registrationInfo format');
         rawCredentialID = registrationInfo.credentialID;
         rawPublicKey = registrationInfo.credentialPublicKey;
         counter = registrationInfo.counter || 0;
@@ -294,105 +294,49 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
         backedUp = registrationInfo.credentialBackedUp || false;
       }
       
-      // Method 2: Try to get from authData in registrationInfo (some library versions)
-      if (!rawCredentialID && registrationInfo?.authData) {
-        console.log('📦 Trying to extract from authData');
-        try {
-          // AuthData contains credentialID at a specific offset
-          // This is complex - for now we'll log it
-          console.log('authData present but extraction not implemented');
-        } catch (e) {
-          console.error('❌ Failed to parse authData:', e);
-        }
-      }
-      
-      // Method 3: Fallback to credential.id (raw WebAuthn format)
+      // Method 2: Fallback to credential.id
       if (!rawCredentialID && credential.id) {
-        console.log('📦 Falling back to credential.id as credentialID');
+        console.log('📦 Falling back to credential.id');
         try {
-          // credential.id is base64url encoded
           rawCredentialID = Buffer.from(credential.id, 'base64');
-          console.log('✅ Using credential.id as fallback');
         } catch (e) {
-          console.error('❌ Failed to convert credential.id to buffer:', e);
+          console.error('❌ Failed to convert credential.id:', e);
         }
       }
       
-      // Method 4: Try to get public key from credential.response
-      if (!rawPublicKey && credential.response) {
-        console.log('📦 Attempting to extract public key from response');
-        // In a real implementation, you'd need to parse the attestation object
-        // This is a simplified fallback
-        if (credential.response.publicKey) {
-          try {
-            rawPublicKey = Buffer.from(credential.response.publicKey);
-            console.log('✅ Using response.publicKey');
-          } catch (e) {
-            console.error('❌ Failed to convert publicKey:', e);
-          }
-        }
-      }
-      
-      // Method 5: Last resort - generate a placeholder (FOR DEVELOPMENT ONLY)
-      if (!rawCredentialID) {
-        console.error('❌ CRITICAL: Could not extract credentialID from any source');
-        console.log('Verification object:', JSON.stringify(verification, null, 2));
-        
-        // For development only - generate a temporary ID
-        // REMOVE THIS IN PRODUCTION
-        if (!isProduction) {
-          console.warn('⚠️ DEVELOPMENT MODE: Generating temporary credential ID');
-          rawCredentialID = crypto.randomBytes(32);
-          rawPublicKey = crypto.randomBytes(65);
-        } else {
-          return res.status(500).json({ 
-            error: 'Invalid registration data: could not extract credential ID',
-            debug: { verified: true, hasRegistrationInfo: !!registrationInfo }
-          });
-        }
+      // Method 3: Last resort for development
+      if (!rawCredentialID && !isProduction) {
+        console.warn('⚠️ DEVELOPMENT: Generating temporary credential ID');
+        rawCredentialID = crypto.randomBytes(32);
+        rawPublicKey = crypto.randomBytes(65);
       }
 
-      // Final validation
       if (!rawCredentialID) {
-        console.error('❌ No credential ID available after all fallbacks');
+        console.error('❌ Could not extract credential ID');
         return res.status(500).json({ error: 'Failed to process credential' });
       }
 
       if (!rawPublicKey) {
-        console.error('❌ No public key available after all fallbacks');
+        console.error('❌ Could not extract public key');
         return res.status(500).json({ error: 'Failed to process public key' });
       }
 
-      console.log('Raw credentialID type:', typeof rawCredentialID);
-      console.log('Raw credentialID is Buffer?', Buffer.isBuffer(rawCredentialID));
-      
-      // Safely convert credentialID to base64
-      let credentialIdBase64;
+      // Convert to base64 for storage
+      let credentialIdBase64, publicKeyBase64;
       try {
-        const credentialIDBuffer = Buffer.isBuffer(rawCredentialID) 
-          ? rawCredentialID 
-          : Buffer.from(rawCredentialID);
-        credentialIdBase64 = credentialIDBuffer.toString('base64');
-        console.log('✅ CredentialID converted to base64, length:', credentialIdBase64.length);
-      } catch (bufferError) {
-        console.error('❌ Failed to convert credentialID to base64:', bufferError);
-        return res.status(500).json({ error: 'Failed to process credential ID' });
+        credentialIdBase64 = Buffer.isBuffer(rawCredentialID) 
+          ? rawCredentialID.toString('base64')
+          : Buffer.from(rawCredentialID).toString('base64');
+        
+        publicKeyBase64 = Buffer.isBuffer(rawPublicKey)
+          ? rawPublicKey.toString('base64')
+          : Buffer.from(rawPublicKey).toString('base64');
+      } catch (e) {
+        console.error('❌ Buffer conversion error:', e);
+        return res.status(500).json({ error: 'Failed to convert credential data' });
       }
 
-      // Safely convert publicKey to base64
-      let publicKeyBase64;
-      try {
-        const publicKeyBuffer = Buffer.isBuffer(rawPublicKey)
-          ? rawPublicKey
-          : Buffer.from(rawPublicKey);
-        publicKeyBase64 = publicKeyBuffer.toString('base64');
-        console.log('✅ PublicKey converted to base64, length:', publicKeyBase64.length);
-      } catch (bufferError) {
-        console.error('❌ Failed to convert publicKey to base64:', bufferError);
-        return res.status(500).json({ error: 'Failed to process public key' });
-      }
-
-      // Create a new user in the database
+      // Create new user
       console.log('👤 Creating new user:', storedData.tempUsername);
       const { data: newUser, error: userError } = await supabase
         .from('users')
@@ -412,23 +356,35 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
 
       console.log('✅ User created:', newUser.id);
 
-      // Store credential in database
+      // Store credential - using correct column names
+      const credentialData = {
+        user_id: newUser.id,
+        credential_id: credentialIdBase64,
+        public_key: publicKeyBase64,
+        counter: counter,
+        device_type: deviceType,
+        backed_up: backedUp,
+        transports: credential.response?.transports || ['internal'],
+        created_at: new Date().toISOString()
+      };
+
+      console.log('📦 Storing credential with data:', {
+        ...credentialData,
+        credential_id: credentialData.credential_id.substring(0, 20) + '...',
+        public_key: '[HIDDEN]'
+      });
+
       const { error: dbError } = await supabase
         .from('user_credentials')
-        .insert({
-          user_id: newUser.id,
-          credential_id: credentialIdBase64,
-          public_key: publicKeyBase64,
-          counter: counter,
-          device_type: deviceType,
-          backed_up: backedUp,
-          transports: credential.response?.transports || ['internal'],
-          created_at: new Date().toISOString()
-        });
+        .insert(credentialData);
 
       if (dbError) {
         console.error('❌ Failed to store credential:', dbError);
-        return res.status(500).json({ error: 'Failed to store credential' });
+        return res.status(500).json({ 
+          error: 'Failed to store credential',
+          details: dbError.message,
+          code: dbError.code
+        });
       }
 
       console.log('✅ Credential stored successfully');
@@ -446,17 +402,15 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
     }
   } catch (error) {
     console.error('❌ WebAuthn registration complete error:', error);
-    console.error('Error stack:', error.stack);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ LOGIN BEGIN - PURE BIOMETRIC (no userId required)
+// ✅ LOGIN BEGIN - PURE BIOMETRIC
 app.post('/api/webauthn/login/begin', async (req, res) => {
   try {
-    console.log('🔐 Starting WebAuthn authentication (pure biometric)');
+    console.log('🔐 Starting WebAuthn authentication');
 
-    // Get ALL credentials from database
     const { data: credentials, error: dbError } = await supabase
       .from('user_credentials')
       .select('credential_id, transports');
@@ -473,7 +427,7 @@ app.post('/api/webauthn/login/begin', async (req, res) => {
     const allowCredentials = credentials.map(cred => ({
       id: Buffer.from(cred.credential_id, 'base64'),
       type: 'public-key',
-      transports: cred.transports || ['internal', 'hybrid', 'usb', 'nfc', 'ble'],
+      transports: cred.transports || ['internal'],
     }));
 
     const options = await generateAuthenticationOptions({
@@ -488,42 +442,30 @@ app.post('/api/webauthn/login/begin', async (req, res) => {
       timestamp: Date.now()
     });
 
-    console.log(`✅ Authentication options generated with challenge ID: ${challengeId}`);
+    console.log(`✅ Authentication options generated: ${challengeId}`);
     res.json({ ...options, challengeId });
   } catch (error) {
-    console.error('❌ WebAuthn authentication begin error:', error);
+    console.error('❌ Login begin error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ LOGIN COMPLETE - VERIFY AND RETURN USER (FIXED)
+// ✅ LOGIN COMPLETE
 app.post('/api/webauthn/login/complete', async (req, res) => {
   try {
     const { credential, challengeId } = req.body;
     
     console.log('\n🔐 LOGIN COMPLETE - START');
-    console.log('Challenge ID:', challengeId);
     
     if (!credential || !challengeId) {
-      console.error('❌ Missing credential or challengeId');
-      return res.status(400).json({ error: 'Missing credential or challengeId' });
+      return res.status(400).json({ error: 'Missing data' });
     }
-
-    // Check if credential has id
-    if (!credential.id) {
-      console.error('❌ Credential missing id field');
-      return res.status(400).json({ error: 'Invalid credential: missing id' });
-    }
-
-    console.log('Credential ID received:', credential.id.substring(0, 20) + '...');
 
     const storedData = challenges.get(challengeId);
     if (!storedData) {
-      console.error('❌ No authentication session found');
-      return res.status(400).json({ error: 'No authentication session found' });
+      return res.status(400).json({ error: 'No session found' });
     }
 
-    // Get the credential from database - credential.id is already base64url
     const { data: storedCredential, error: dbError } = await supabase
       .from('user_credentials')
       .select('*, users(*)')
@@ -535,18 +477,6 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
       return res.status(404).json({ error: 'Credential not found' });
     }
 
-    console.log('✅ Credential found for user:', storedCredential.users.id);
-
-    // Safely convert publicKey from base64 to Buffer
-    let publicKeyBuffer;
-    try {
-      publicKeyBuffer = Buffer.from(storedCredential.public_key, 'base64');
-      console.log('✅ PublicKey converted successfully');
-    } catch (bufferError) {
-      console.error('❌ Failed to convert publicKey from base64:', bufferError);
-      return res.status(500).json({ error: 'Failed to process public key' });
-    }
-
     const verification = await verifyAuthenticationResponse({
       response: credential,
       expectedChallenge: storedData.challenge,
@@ -554,27 +484,23 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
       expectedRPID: rpID,
       credential: {
         id: storedCredential.credential_id,
-        publicKey: publicKeyBuffer,
-        counter: storedCredential.counter || 0,
-        transports: storedCredential.transports || ['internal'],
+        publicKey: Buffer.from(storedCredential.public_key, 'base64'),
+        counter: storedCredential.counter,
+        transports: storedCredential.transports,
       },
       requireUserVerification: true,
     });
 
-    const { verified, authenticationInfo } = verification;
-
-    if (verified && authenticationInfo) {
-      // Update counter
+    if (verification.verified) {
       await supabase
         .from('user_credentials')
         .update({ 
-          counter: authenticationInfo.newCounter,
+          counter: verification.authenticationInfo.newCounter,
           last_used: new Date().toISOString()
         })
         .eq('credential_id', credential.id);
 
-      console.log(`✅ WebAuthn authentication successful for user: ${storedCredential.users.id}`);
-      
+      console.log(`✅ Login successful: ${storedCredential.users.id}`);
       challenges.delete(challengeId);
       
       res.json({ 
@@ -582,16 +508,15 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
         user: storedCredential.users
       });
     } else {
-      console.log('❌ WebAuthn authentication verification failed');
       res.status(400).json({ verified: false });
     }
   } catch (error) {
-    console.error('❌ WebAuthn authentication complete error:', error);
+    console.error('❌ Login complete error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ GET USER'S REGISTERED DEVICES
+// ✅ GET USER DEVICES
 app.get('/api/webauthn/devices/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -602,19 +527,14 @@ app.get('/api/webauthn/devices/:userId', async (req, res) => {
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('❌ Failed to fetch devices:', error);
-      return res.status(500).json({ error: 'Failed to fetch devices' });
-    }
-
+    if (error) throw error;
     res.json({ devices });
   } catch (error) {
-    console.error('❌ Error fetching devices:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ REMOVE A DEVICE
+// ✅ REMOVE DEVICE
 app.delete('/api/webauthn/devices/:deviceId', async (req, res) => {
   try {
     const { deviceId } = req.params;
@@ -626,19 +546,14 @@ app.delete('/api/webauthn/devices/:deviceId', async (req, res) => {
       .eq('id', deviceId)
       .eq('user_id', userId);
 
-    if (error) {
-      console.error('❌ Failed to delete device:', error);
-      return res.status(500).json({ error: 'Failed to delete device' });
-    }
-
+    if (error) throw error;
     res.json({ success: true });
   } catch (error) {
-    console.error('❌ Error deleting device:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ Debug endpoint to check challenges
+// ✅ DEBUG CHALLENGES
 app.get('/api/debug/challenges', (req, res) => {
   res.json({
     count: challenges.size,
@@ -647,28 +562,21 @@ app.get('/api/debug/challenges', (req, res) => {
   });
 });
 
-// ✅ Health check
+// ✅ HEALTH CHECK
 app.get("/api/health", (req, res) => {
   res.json({ 
-    status: "Server is running",
+    status: "OK",
     timestamp: new Date().toISOString(),
     environment: {
       node: process.version,
       port: PORT,
       supabase: process.env.VITE_SUPABASE_URL ? 'Connected' : 'Disconnected',
-      payfast: process.env.PAYFAST_MERCHANT_ID ? 'Configured' : 'Not configured',
-      mode: process.env.PAYFAST_BASE_URL?.includes('sandbox') ? 'SANDBOX' : 'LIVE',
-      appBaseUrl: process.env.APP_BASE_URL,
-      webauthn: {
-        rpID,
-        origin: expectedOrigin,
-        configured: true
-      }
+      webauthn: { rpID, origin: expectedOrigin, configured: true }
     }
   });
 });
 
-// ============ PAYFAST SIGNATURE GENERATOR ============
+// ✅ PAYFAST SIGNATURE GENERATOR
 function generatePayFastSignature(params, passphrase) {
   const orderedParams = {};
   Object.keys(params).forEach(key => {
@@ -687,195 +595,100 @@ function generatePayFastSignature(params, passphrase) {
   const paramString = paramPairs.join('&');
   const cleanPassphrase = String(passphrase).trim();
   const stringToHash = paramString + '&passphrase=' + cleanPassphrase;
-  const signature = crypto.createHash('md5').update(stringToHash).digest('hex');
-  
-  return {
-    signature,
-    paramString,
-    stringToHash,
-    paramOrder: Object.keys(orderedParams)
-  };
+  return crypto.createHash('md5').update(stringToHash).digest('hex');
 }
-
-// ============ PAYMENT ENDPOINTS ============
 
 // ✅ CREATE PAYMENT
 app.post("/api/payfast/create-payment", async (req, res) => {
   try {
     const { amount, userId, paymentMethod, voucherCode } = req.body;
 
-    console.log('\n' + '💰'.repeat(30));
-    console.log('💰 PAYMENT REQUEST');
-    console.log('💰'.repeat(30));
-    console.log('Amount:', amount);
-    console.log('User ID:', userId);
-    console.log('Payment Method:', paymentMethod || 'payfast');
-    console.log('Voucher Code:', voucherCode || 'none');
-
     if (!amount || !userId) {
-      return res.status(400).json({ 
-        error: "Missing required fields",
-        required: ["amount", "userId"]
-      });
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    if (isNaN(amount) || amount <= 0) {
-      return res.status(400).json({ error: "Invalid amount" });
-    }
-
-    // If paying with voucher, handle it directly
+    // Voucher payment
     if (paymentMethod === 'voucher') {
       if (!voucherCode) {
         return res.status(400).json({ error: "Voucher code required" });
       }
 
-      console.log(`🎫 Processing voucher payment with code: ${voucherCode}`);
-
-      const { data: voucher, error: voucherError } = await supabase
+      const { data: voucher } = await supabase
         .from('vouchers')
         .select('*')
         .eq('code', voucherCode)
         .eq('status', 'active')
         .single();
 
-      if (voucherError || !voucher) {
-        console.error("❌ Invalid voucher:", voucherError);
-        return res.status(400).json({ error: "Invalid voucher code" });
+      if (!voucher || voucher.balance < amount) {
+        return res.status(400).json({ error: "Invalid voucher" });
       }
 
-      if (voucher.balance < amount) {
-        return res.status(400).json({ 
-          error: "Insufficient voucher balance",
-          available: voucher.balance
-        });
-      }
-
-      const { data: user, error: userError } = await supabase
+      const { data: user } = await supabase
         .from('users')
         .select('balance')
         .eq('id', userId)
         .single();
 
-      if (userError) {
-        console.error("❌ User not found:", userError);
-        return res.status(404).json({ error: "User not found" });
-      }
+      const newBalance = (user.balance || 0) + amount;
 
-      const newUserBalance = (user.balance || 0) + amount;
-
-      const { error: updateError } = await supabase.rpc('process_voucher_payment', {
+      await supabase.rpc('process_voucher_payment', {
         p_user_id: userId,
         p_amount: amount,
         p_voucher_id: voucher.id,
         p_voucher_code: voucherCode
       });
 
-      if (updateError) {
-        console.error("❌ Voucher payment failed:", updateError);
-        return res.status(500).json({ error: "Payment processing failed" });
-      }
-
-      const paymentId = `voucher_${Date.now()}`;
-      await supabase
-        .from("transactions")
-        .insert([{
-          user_id: userId,
-          amount: amount,
-          type: "deposit",
-          provider: "voucher",
-          status: "completed",
-          payment_id: paymentId,
-          reference: voucherCode,
-          created_at: new Date().toISOString()
-        }]);
-
-      console.log(`✅ Voucher payment completed: R${amount} added to user ${userId}`);
-      
       return res.json({ 
         success: true,
         method: 'voucher',
-        message: 'Payment successful',
-        amount: amount,
-        new_balance: newUserBalance
+        amount,
+        new_balance: newBalance
       });
     }
 
-    // Regular PayFast payment
+    // PayFast payment
     const paymentId = `pay_${Date.now()}`;
-
     const data = {
       merchant_id: String(process.env.PAYFAST_MERCHANT_ID).trim(),
       merchant_key: String(process.env.PAYFAST_MERCHANT_KEY).trim(),
       return_url: String(`${process.env.APP_BASE_URL}/payment/success`).trim(),
       cancel_url: String(`${process.env.APP_BASE_URL}/payment/cancel`).trim(),
       notify_url: String(`${process.env.APP_BASE_URL}/payfast/notify`).trim(),
-      m_payment_id: String(paymentId).trim(),
-      amount: String(parseFloat(amount).toFixed(2)).trim(),
-      item_name: String("Savings Deposit").trim(),
-      custom_str1: String(userId).trim()
+      m_payment_id: paymentId,
+      amount: String(parseFloat(amount).toFixed(2)),
+      item_name: "Savings Deposit",
+      custom_str1: String(userId)
     };
 
-    console.log('\n📦 Data order:', Object.keys(data));
+    data.signature = generatePayFastSignature(data, process.env.PAYFAST_PASSPHRASE);
 
-    const passphrase = String(process.env.PAYFAST_PASSPHRASE).trim();
-    const { signature } = generatePayFastSignature(data, passphrase);
+    const queryString = Object.keys(data)
+      .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(data[key])}`)
+      .join("&");
     
-    data.signature = signature;
+    const payfastUrl = `${process.env.PAYFAST_BASE_URL}?${queryString}`;
 
-    const finalPairs = [];
-    for (const key of Object.keys(data)) {
-      finalPairs.push(`${encodeURIComponent(key)}=${encodeURIComponent(data[key])}`);
-    }
-    const finalQuery = finalPairs.join('&');
-    const payfastUrl = `${process.env.PAYFAST_BASE_URL}?${finalQuery}`;
-
-    console.log('\n✅ Payment URL generated');
-
-    try {
-      const { error: insertError } = await supabase
-        .from("payments")
-        .insert([{
-          payment_id: paymentId,
-          user_id: userId,
-          amount: parseFloat(amount),
-          status: "pending",
-          payment_method: paymentMethod || 'payfast',
-          voucher_code: voucherCode || null,
-          created_at: new Date().toISOString()
-        }]);
-
-      if (insertError) {
-        console.error("⚠️ Could not store payment:", insertError.message);
-      } else {
-        console.log('💾 Payment stored in database');
-      }
-    } catch (dbError) {
-      console.error("⚠️ Database error:", dbError.message);
-    }
-
-    res.json({ 
-      success: true,
-      method: paymentMethod || 'payfast',
-      url: payfastUrl,
+    // Store payment record
+    await supabase.from("payments").insert([{
       payment_id: paymentId,
-      amount: amount
-    });
+      user_id: userId,
+      amount: parseFloat(amount),
+      status: "pending",
+      created_at: new Date().toISOString()
+    }]);
 
+    res.json({ success: true, url: payfastUrl, payment_id: paymentId });
   } catch (error) {
     console.error("❌ Payment error:", error);
-    res.status(500).json({ 
-      error: "Failed to create payment",
-      message: error.message 
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ SIGNATURE COMPARISON TOOL
-app.post("/api/payfast/compare-signature", express.text({ type: "*/*" }), (req, res) => {
+// ✅ PAYFAST WEBHOOK
+app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) => {
   try {
-    console.log('\n' + '🔍'.repeat(60));
-    console.log('🔍 SIGNATURE COMPARISON TOOL');
-    console.log('🔍'.repeat(60));
+    console.log("\n📨 WEBHOOK RECEIVED");
     
     const params = Object.fromEntries(
       req.body.split("&").map(pair => {
@@ -886,423 +699,117 @@ app.post("/api/payfast/compare-signature", express.text({ type: "*/*" }), (req, 
 
     const receivedSignature = params.signature;
     delete params.signature;
-
-    const cleanParams = {};
-    Object.keys(params).forEach(key => {
-      if (params[key] !== undefined && params[key] !== null) {
-        cleanParams[key] = String(params[key]).trim();
-      }
-    });
-
-    const passphrase = String(process.env.PAYFAST_PASSPHRASE).trim();
-    const { signature: expectedSignature } = generatePayFastSignature(cleanParams, passphrase);
-
-    res.json({
-      received: receivedSignature,
-      expected: expectedSignature,
-      match: receivedSignature === expectedSignature
-    });
-
-  } catch (error) {
-    console.error('❌ Comparison error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ✅ TEST PAYMENT ENDPOINT
-app.get("/api/payfast/test-payment", (req, res) => {
-  try {
-    const testUserId = "test_user_123";
-    const testAmount = 100;
     
-    const data = {
-      merchant_id: String(process.env.PAYFAST_MERCHANT_ID).trim(),
-      merchant_key: String(process.env.PAYFAST_MERCHANT_KEY).trim(),
-      return_url: String(`${process.env.APP_BASE_URL}/test-success`).trim(),
-      cancel_url: String(`${process.env.APP_BASE_URL}/test-cancel`).trim(),
-      notify_url: String(`${process.env.APP_BASE_URL}/payfast/notify`).trim(),
-      m_payment_id: `test_${Date.now()}`,
-      amount: testAmount.toFixed(2),
-      item_name: "Test Payment",
-      custom_str1: testUserId
-    };
-    
-    const passphrase = String(process.env.PAYFAST_PASSPHRASE).trim();
-    const { signature } = generatePayFastSignature(data, passphrase);
-    
-    data.signature = signature;
-    
-    const queryString = Object.keys(data)
-      .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(data[key])}`)
-      .join("&");
-    
-    const payfastUrl = `${process.env.PAYFAST_BASE_URL}?${queryString}`;
-    
-    res.json({
-      success: true,
-      url: payfastUrl,
-      signature: signature
-    });
-  } catch (error) {
-    console.error("❌ Test payment error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============ WEBHOOK ENDPOINTS ============
-
-app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) => {
-  try {
-    console.log("\n" + "=".repeat(60));
-    console.log("📨 WEBHOOK RECEIVED - START");
-    console.log("=".repeat(60));
-    console.log("📝 Raw body:", req.body);
-
-    let params;
-    try {
-      params = Object.fromEntries(
-        req.body.split("&").map(pair => {
-          const [key, value] = pair.split("=");
-          return [key, decodeURIComponent(value || "")];
-        })
-      );
-      console.log("📦 Parsed params:", JSON.stringify(params, null, 2));
-    } catch (parseError) {
-      console.error("❌ Failed to parse webhook body:", parseError);
-      return res.status(400).send("Invalid body format");
-    }
-
-    const receivedSignature = params.signature;
-    delete params.signature;
-    
-    const passphrase = String(process.env.PAYFAST_PASSPHRASE).trim();
-    const { signature: expectedSignature } = generatePayFastSignature(params, passphrase);
-
-    console.log("🔐 Signature comparison:");
-    console.log("   Received:", receivedSignature);
-    console.log("   Expected:", expectedSignature);
-    console.log("   Match:", receivedSignature === expectedSignature ? "✅ YES" : "❌ NO");
+    const expectedSignature = generatePayFastSignature(
+      params, 
+      process.env.PAYFAST_PASSPHRASE
+    );
 
     if (receivedSignature !== expectedSignature) {
-      console.error("❌ Invalid PayFast signature");
+      console.error("❌ Invalid signature");
       return res.status(400).send("Invalid signature");
     }
 
-    console.log("✅ Signature verified");
-
     if (params.payment_status === "COMPLETE") {
-      const userId = params.custom_str1 || params.custom_int1;
-      const amount = parseFloat(params.amount_gross || params.amount);
+      const userId = params.custom_str1;
+      const amount = parseFloat(params.amount_gross);
       const paymentId = params.m_payment_id;
-      const pfPaymentId = params.pf_payment_id;
 
-      console.log(`💰 Processing payment:`);
-      console.log(`   User ID: ${userId}`);
-      console.log(`   Amount: R${amount}`);
-      console.log(`   Payment ID: ${paymentId}`);
-      console.log(`   PF Payment ID: ${pfPaymentId}`);
-
-      if (!userId || !amount) {
-        console.error("❌ Missing userId or amount");
-        return res.status(400).send("Missing data");
-      }
-
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('id, balance, username')
-        .eq('id', userId)
-        .single();
-
-      if (userError) {
-        console.error("❌ User not found:", userError);
-        return res.status(400).send("User not found");
-      }
-
-      console.log(`👤 User found: ${user.username}, Current balance: R${user.balance || 0}`);
-
-      console.log("🔄 Updating user balance...");
-      const { error: balanceError } = await supabase
-        .rpc("increment_balance", {
-          user_id_input: userId,
-          amount_input: amount
-        });
-
-      if (balanceError) {
-        console.error("❌ Balance update error:", balanceError);
-        
-        console.log("🔄 Trying direct update...");
-        const newBalance = (user.balance || 0) + amount;
-        const { error: directError } = await supabase
-          .from('users')
-          .update({ balance: newBalance })
-          .eq('id', userId);
-
-        if (directError) {
-          console.error("❌ Direct update failed:", directError);
-          return res.status(500).send("Failed to update balance");
-        } else {
-          console.log("✅ Direct update succeeded");
-        }
-      } else {
-        console.log("✅ Balance updated via RPC");
-      }
-
-      const { data: updatedUser } = await supabase
+      // Update user balance
+      const { data: user } = await supabase
         .from('users')
         .select('balance')
         .eq('id', userId)
         .single();
 
-      console.log(`💰 New balance: R${updatedUser?.balance || 0}`);
-
-      console.log("🔄 Handling payments record...");
+      const newBalance = (user.balance || 0) + amount;
       
-      const { data: existingPayment, error: findError } = await supabase
+      await supabase
+        .from('users')
+        .update({ balance: newBalance })
+        .eq('id', userId);
+
+      // Update payment status
+      await supabase
         .from("payments")
-        .select("id, status")
-        .eq("payment_id", paymentId)
-        .maybeSingle();
-
-      if (findError) {
-        console.error("❌ Error checking existing payment:", findError);
-      }
-
-      if (existingPayment) {
-        console.log("📝 Updating existing payment record");
-        const { error: updateError } = await supabase
-          .from("payments")
-          .update({ 
-            status: "completed",
-            completed_at: new Date().toISOString(),
-            transaction_id: pfPaymentId
-          })
-          .eq("payment_id", paymentId);
-
-        if (updateError) {
-          console.error("❌ Payment update error:", updateError);
-        } else {
-          console.log("✅ Payment status updated to completed");
-        }
-      } else {
-        console.log("📝 Inserting new payment record");
-        const { error: insertError } = await supabase
-          .from("payments")
-          .insert([{
-            payment_id: paymentId,
-            user_id: userId,
-            amount: amount,
-            status: "completed",
-            transaction_id: pfPaymentId,
-            completed_at: new Date().toISOString(),
-            created_at: new Date().toISOString()
-          }]);
-
-        if (insertError) {
-          console.error("❌ Payment insert error:", insertError);
-        } else {
-          console.log("✅ Payment record inserted");
-        }
-      }
-
-      console.log("🔄 Recording transaction...");
-      const { error: transactionError } = await supabase
-        .from("transactions")
-        .insert([{
-          user_id: userId,
-          amount: amount,
-          type: "deposit",
-          provider: "payfast",
+        .update({ 
           status: "completed",
-          payment_id: paymentId,
-          reference: pfPaymentId,
-          created_at: new Date().toISOString()
-        }]);
+          completed_at: new Date().toISOString()
+        })
+        .eq("payment_id", paymentId);
 
-      if (transactionError) {
-        console.error("❌ Transaction error:", transactionError);
-      } else {
-        console.log("✅ Transaction recorded");
-      }
+      // Record transaction
+      await supabase.from("transactions").insert([{
+        user_id: userId,
+        amount: amount,
+        type: "deposit",
+        provider: "payfast",
+        status: "completed",
+        payment_id: paymentId,
+        created_at: new Date().toISOString()
+      }]);
 
-      console.log(`🎉 Payment completed successfully for user ${userId}: R${amount}`);
-    } else {
-      console.log(`ℹ️ Payment status: ${params.payment_status}`);
+      console.log(`✅ Payment completed: R${amount} for user ${userId}`);
     }
 
-    console.log("=".repeat(60) + "\n");
     res.status(200).send("OK");
   } catch (error) {
     console.error("❌ Webhook error:", error);
-    console.log("=".repeat(60) + "\n");
-    res.status(500).send("Internal Server Error");
+    res.status(500).send("Error");
   }
 });
 
-// ============ DIAGNOSTIC ENDPOINT ============
+// ✅ DIAGNOSTIC ENDPOINT
 app.get("/api/diagnostic", async (req, res) => {
   try {
-    console.log("\n🔧 DIAGNOSTIC CHECK");
-    console.log("=".repeat(60));
-    
     const results = {
       server: {
         time: new Date().toISOString(),
         node_version: process.version,
         environment: isProduction ? 'production' : 'development'
       },
-      supabase: {
-        connected: false,
-        tables: {},
-        rpc_function: null
-      },
-      payfast: {
-        configured: !!process.env.PAYFAST_MERCHANT_ID,
-        merchant_id: process.env.PAYFAST_MERCHANT_ID,
-        base_url: process.env.PAYFAST_BASE_URL
-      },
-      webauthn: {
-        configured: true,
-        rpID,
-        origin: expectedOrigin,
-        rpName
-      }
+      supabase: { connected: false, tables: {} },
+      webauthn: { rpID, origin: expectedOrigin }
     };
 
-    console.log("📊 Testing Supabase connection...");
+    // Test connections
     const { error: usersError } = await supabase
       .from('users')
       .select('count', { count: 'exact', head: true });
 
     results.supabase.connected = !usersError;
-    results.supabase.tables.users = usersError ? `❌ ${usersError.message}` : '✅ Connected';
+    results.supabase.tables.users = usersError ? '❌' : '✅';
 
-    const { error: paymentsError } = await supabase
-      .from('payments')
-      .select('count', { count: 'exact', head: true });
-    
-    results.supabase.tables.payments = paymentsError ? `❌ ${paymentsError.message}` : '✅ Connected';
-
-    const { error: transactionsError } = await supabase
-      .from('transactions')
-      .select('count', { count: 'exact', head: true });
-    
-    results.supabase.tables.transactions = transactionsError ? `❌ ${transactionsError.message}` : '✅ Connected';
-
-    const { error: credentialsError } = await supabase
-      .from('user_credentials')
-      .select('count', { count: 'exact', head: true });
-    
-    results.supabase.tables.user_credentials = credentialsError ? `❌ ${credentialsError.message}` : '✅ Connected';
-
-    console.log("\n📊 Testing increment_balance RPC function...");
-    const testUserId = req.query.userId || '00000000-0000-0000-0000-000000000000';
-    const { error: rpcError } = await supabase
-      .rpc('increment_balance', {
-        user_id_input: testUserId,
-        amount_input: 0
-      });
-
-    results.supabase.rpc_function = !rpcError ? '✅ Exists' : `❌ ${rpcError.message}`;
-
-    console.log("\n✅ Diagnostic complete");
-    console.log("=".repeat(60) + "\n");
-
-    res.json({
-      success: true,
-      ...results,
-      instructions: {
-        test_webhook: `/api/payfast/test-notify?userId=YOUR_USER_ID&amount=100`,
-        webauthn_register: `POST /api/webauthn/register/begin (no data needed)`,
-        webauthn_login: `POST /api/webauthn/login/begin (no data needed)`,
-        has_devices: `GET /api/webauthn/has-devices`,
-        debug_challenges: `GET /api/debug/challenges`
-      }
-    });
-
+    res.json({ success: true, ...results });
   } catch (error) {
-    console.error("❌ Diagnostic error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ============ SERVE FRONTEND STATIC FILES ============
+// ============ SERVE FRONTEND ============
 const distPath = path.join(__dirname, 'dist');
 
 if (isProduction) {
-  console.log(`\n📦 Production mode: Serving static files from ${distPath}`);
+  console.log(`\n📦 Serving static files from ${distPath}`);
   
   if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
-    
-    app.use((req, res, next) => {
-      if (req.path.startsWith('/api')) {
-        return next();
-      }
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api')) return next();
       res.sendFile(path.join(distPath, 'index.html'));
     });
-    
     console.log('✅ Static file serving enabled');
   } else {
-    console.error('❌ dist folder not found! Run npm run build first');
+    console.error('❌ dist folder not found!');
   }
-} else {
-  console.log(`\n🔄 Development mode: API only, frontend running on Vite dev server`);
 }
-
-// ============ ERROR HANDLING ============
-app.use((req, res) => {
-  if (req.path.startsWith('/api')) {
-    res.status(404).json({ 
-      error: "API endpoint not found", 
-      path: req.url
-    });
-  }
-});
-
-app.use((err, req, res, next) => {
-  console.error("❌ Unhandled error:", err);
-  res.status(500).json({ 
-    error: "Internal server error",
-    message: err.message 
-  });
-});
 
 // ============ START SERVER ============
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
-  console.log(`🚀 SERVER STARTED SUCCESSFULLY`);
+  console.log(`🚀 SERVER STARTED ON PORT ${PORT}`);
   console.log('='.repeat(60));
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`🔗 APP_BASE_URL: ${process.env.APP_BASE_URL}`);
-  console.log(`💰 PayFast: ${process.env.PAYFAST_BASE_URL?.includes('sandbox') ? 'SANDBOX' : 'LIVE'}`);
-  console.log(`🆔 Merchant ID: ${process.env.PAYFAST_MERCHANT_ID}`);
-  console.log(`🌍 Mode: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
-  console.log(`🔐 WebAuthn: Configured with RP ID: ${rpID}`);
-  console.log('='.repeat(60));
-  console.log(`📝 API Endpoints:`);
-  console.log(`   🔐 WEBAUTHN (FINGERPRINT):`);
-  console.log(`   GET  /api/webauthn/has-devices - Check if any devices exist`);
-  console.log(`   POST /api/webauthn/register/begin - Start fingerprint registration (no data needed)`);
-  console.log(`   POST /api/webauthn/register/complete - Complete fingerprint registration`);
-  console.log(`   POST /api/webauthn/login/begin - Start fingerprint login (no data needed)`);
-  console.log(`   POST /api/webauthn/login/complete - Complete fingerprint login`);
-  console.log(`   GET  /api/webauthn/devices/:userId - List user's registered devices`);
-  console.log(`   DELETE /api/webauthn/devices/:deviceId - Remove a device`);
-  console.log(`   GET  /api/debug/challenges - Debug: View active challenges`);
-  console.log('   ' + '-'.repeat(40));
-  console.log(`   💰 PAYFAST:`);
-  console.log(`   GET  http://localhost:${PORT}/api/health`);
-  console.log(`   GET  http://localhost:${PORT}/api/diagnostic`);
-  console.log(`   GET  http://localhost:${PORT}/api/payfast/test-notify`);
-  console.log(`   POST http://localhost:${PORT}/api/payfast/test-notify`);
-  console.log(`   POST http://localhost:${PORT}/api/payfast/notify (webhook)`);
-  
-  if (!isProduction) {
-    console.log(`\n🎨 Frontend:`);
-    console.log(`   http://localhost:5173 (Vite dev server)`);
-  } else {
-    console.log(`\n🎨 Frontend:`);
-    console.log(`   ${process.env.APP_BASE_URL}`);
-  }
+  console.log(`🔐 WebAuthn RP ID: ${rpID}`);
+  console.log(`🌐 Origin: ${expectedOrigin}`);
   console.log('='.repeat(60) + '\n');
 });
