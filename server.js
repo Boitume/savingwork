@@ -185,13 +185,12 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
     const tempUserId = `temp_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
     const tempUsername = `user_${Date.now().toString().slice(-6)}`;
 
-    // 🔴 FIX: Convert string to Buffer/Uint8Array for v10+ compatibility
+    // Convert string to Buffer/Uint8Array for v10+ compatibility
     const userIDBuffer = Buffer.from(tempUserId, 'utf8');
     
     const options = await generateRegistrationOptions({
       rpName,
       rpID,
-      // Use Uint8Array instead of string
       userID: userIDBuffer,
       userName: tempUsername,
       userDisplayName: 'User',
@@ -207,7 +206,7 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
     const challengeId = crypto.randomBytes(16).toString('hex');
     challenges.set(challengeId, {
       challenge: options.challenge,
-      tempUserId, // Store the original string for later use
+      tempUserId,
       tempUsername,
       timestamp: Date.now()
     });
@@ -223,21 +222,35 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
   }
 });
 
-// ✅ COMPLETE REGISTRATION (create new user)
+// ✅ COMPLETE REGISTRATION (create new user) - FIXED with null checks
 app.post('/api/webauthn/register/complete', async (req, res) => {
   try {
     const { credential, challengeId } = req.body;
     
+    console.log('\n🔐 REGISTRATION COMPLETE - START');
+    console.log('Challenge ID:', challengeId);
+    
     if (!credential || !challengeId) {
+      console.error('❌ Missing credential or challengeId');
       return res.status(400).json({ error: 'Missing credential or challengeId' });
     }
 
-    console.log(`🔐 Completing WebAuthn registration, challenge ID: ${challengeId}`);
+    // Check if credential has required fields
+    if (!credential.id) {
+      console.error('❌ Credential missing id field');
+      return res.status(400).json({ error: 'Invalid credential: missing id' });
+    }
+
+    console.log('Credential ID received:', credential.id.substring(0, 20) + '...');
 
     const storedData = challenges.get(challengeId);
     if (!storedData) {
+      console.error('❌ No registration session found for challenge ID:', challengeId);
+      console.log('Available challenges:', Array.from(challenges.keys()));
       return res.status(400).json({ error: 'No registration session found' });
     }
+
+    console.log('Stored data found for user:', storedData.tempUsername);
 
     const verification = await verifyRegistrationResponse({
       response: credential,
@@ -250,6 +263,8 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
     const { verified, registrationInfo } = verification;
 
     if (verified && registrationInfo) {
+      console.log('✅ Registration verified successfully');
+
       // Create a new user in the database
       const { data: newUser, error: userError } = await supabase
         .from('users')
@@ -267,17 +282,22 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
         return res.status(500).json({ error: 'Failed to create user' });
       }
 
+      console.log('✅ User created:', newUser.id);
+
       // Store credential in database
+      const credentialIdBase64 = Buffer.from(registrationInfo.credentialID).toString('base64');
+      const publicKeyBase64 = registrationInfo.credentialPublicKey.toString('base64');
+      
       const { error: dbError } = await supabase
         .from('user_credentials')
         .insert({
           user_id: newUser.id,
-          credential_id: Buffer.from(registrationInfo.credentialID).toString('base64'),
-          public_key: registrationInfo.credentialPublicKey.toString('base64'),
+          credential_id: credentialIdBase64,
+          public_key: publicKeyBase64,
           counter: registrationInfo.counter,
           device_type: registrationInfo.credentialDeviceType,
           backed_up: registrationInfo.credentialBackedUp,
-          transports: credential.response.transports || ['internal'],
+          transports: credential.response?.transports || ['internal'],
           created_at: new Date().toISOString()
         });
 
@@ -286,7 +306,7 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
         return res.status(500).json({ error: 'Failed to store credential' });
       }
 
-      console.log(`✅ WebAuthn registration successful for new user: ${newUser.id}`);
+      console.log('✅ Credential stored successfully');
       
       challenges.delete(challengeId);
       
@@ -349,33 +369,46 @@ app.post('/api/webauthn/login/begin', async (req, res) => {
   }
 });
 
-// ✅ LOGIN COMPLETE - VERIFY AND RETURN USER
+// ✅ LOGIN COMPLETE - VERIFY AND RETURN USER (FIXED)
 app.post('/api/webauthn/login/complete', async (req, res) => {
   try {
     const { credential, challengeId } = req.body;
     
+    console.log('\n🔐 LOGIN COMPLETE - START');
+    console.log('Challenge ID:', challengeId);
+    
     if (!credential || !challengeId) {
+      console.error('❌ Missing credential or challengeId');
       return res.status(400).json({ error: 'Missing credential or challengeId' });
     }
 
-    console.log(`🔐 Completing WebAuthn authentication, challenge ID: ${challengeId}`);
+    // Check if credential has id
+    if (!credential.id) {
+      console.error('❌ Credential missing id field');
+      return res.status(400).json({ error: 'Invalid credential: missing id' });
+    }
+
+    console.log('Credential ID received:', credential.id.substring(0, 20) + '...');
 
     const storedData = challenges.get(challengeId);
     if (!storedData) {
+      console.error('❌ No authentication session found');
       return res.status(400).json({ error: 'No authentication session found' });
     }
 
-    const credentialId = Buffer.from(credential.id, 'base64').toString('base64');
+    // Get the credential from database - credential.id is already base64url
     const { data: storedCredential, error: dbError } = await supabase
       .from('user_credentials')
       .select('*, users(*)')
-      .eq('credential_id', credentialId)
+      .eq('credential_id', credential.id)
       .single();
 
     if (dbError || !storedCredential) {
       console.error('❌ Credential not found:', dbError);
       return res.status(404).json({ error: 'Credential not found' });
     }
+
+    console.log('✅ Credential found for user:', storedCredential.users.id);
 
     const verification = await verifyAuthenticationResponse({
       response: credential,
@@ -401,7 +434,7 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
           counter: authenticationInfo.newCounter,
           last_used: new Date().toISOString()
         })
-        .eq('credential_id', credentialId);
+        .eq('credential_id', credential.id);
 
       console.log(`✅ WebAuthn authentication successful for user: ${storedCredential.users.id}`);
       
@@ -466,6 +499,15 @@ app.delete('/api/webauthn/devices/:deviceId', async (req, res) => {
     console.error('❌ Error deleting device:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// ✅ Debug endpoint to check challenges
+app.get('/api/debug/challenges', (req, res) => {
+  res.json({
+    count: challenges.size,
+    keys: Array.from(challenges.keys()),
+    serverTime: Date.now()
+  });
 });
 
 // ✅ Health check
@@ -1035,7 +1077,8 @@ app.get("/api/diagnostic", async (req, res) => {
         test_webhook: `/api/payfast/test-notify?userId=YOUR_USER_ID&amount=100`,
         webauthn_register: `POST /api/webauthn/register/begin (no data needed)`,
         webauthn_login: `POST /api/webauthn/login/begin (no data needed)`,
-        has_devices: `GET /api/webauthn/has-devices`
+        has_devices: `GET /api/webauthn/has-devices`,
+        debug_challenges: `GET /api/debug/challenges`
       }
     });
 
@@ -1108,6 +1151,7 @@ app.listen(PORT, () => {
   console.log(`   POST /api/webauthn/login/complete - Complete fingerprint login`);
   console.log(`   GET  /api/webauthn/devices/:userId - List user's registered devices`);
   console.log(`   DELETE /api/webauthn/devices/:deviceId - Remove a device`);
+  console.log(`   GET  /api/debug/challenges - Debug: View active challenges`);
   console.log('   ' + '-'.repeat(40));
   console.log(`   💰 PAYFAST:`);
   console.log(`   GET  http://localhost:${PORT}/api/health`);
