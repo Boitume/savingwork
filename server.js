@@ -222,7 +222,7 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
   }
 });
 
-// ✅ COMPLETE REGISTRATION - PERMANENT FIX WITH DATABASE SCHEMA COMPATIBILITY
+// ✅ COMPLETE REGISTRATION - FIXED WITH BETTER PUBLIC KEY EXTRACTION
 app.post('/api/webauthn/register/complete', async (req, res) => {
   try {
     const { credential, challengeId } = req.body;
@@ -277,50 +277,116 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
     if (verified) {
       console.log('✅ Registration verified successfully');
       
-      // === EXTRACT CREDENTIAL DATA FROM MULTIPLE POSSIBLE LOCATIONS ===
+      // === IMPROVED CREDENTIAL DATA EXTRACTION ===
       let rawCredentialID = null;
       let rawPublicKey = null;
       let counter = 0;
       let deviceType = 'unknown';
       let backedUp = false;
       
+      // Log what we have in registrationInfo
+      if (registrationInfo) {
+        console.log('📦 registrationInfo keys:', Object.keys(registrationInfo));
+      }
+      
       // Method 1: Standard SimpleWebAuthn v10+ format
       if (registrationInfo) {
-        console.log('📦 Using registrationInfo format');
-        rawCredentialID = registrationInfo.credentialID;
-        rawPublicKey = registrationInfo.credentialPublicKey;
+        console.log('📦 Trying registrationInfo format');
+        
+        // Try to get credentialID
+        if (registrationInfo.credentialID) {
+          rawCredentialID = registrationInfo.credentialID;
+          console.log('✅ Found credentialID in registrationInfo');
+        }
+        
+        // Try multiple possible locations for public key
+        if (registrationInfo.credentialPublicKey) {
+          rawPublicKey = registrationInfo.credentialPublicKey;
+          console.log('✅ Found credentialPublicKey in registrationInfo');
+        } else if (registrationInfo.publicKey) {
+          rawPublicKey = registrationInfo.publicKey;
+          console.log('✅ Found publicKey in registrationInfo');
+        } else if (registrationInfo.credential && registrationInfo.credential.publicKey) {
+          rawPublicKey = registrationInfo.credential.publicKey;
+          console.log('✅ Found publicKey in registrationInfo.credential');
+        }
+        
         counter = registrationInfo.counter || 0;
         deviceType = registrationInfo.credentialDeviceType || 'unknown';
         backedUp = registrationInfo.credentialBackedUp || false;
       }
       
-      // Method 2: Fallback to credential.id
+      // Method 2: Fallback to credential.id for credentialID
       if (!rawCredentialID && credential.id) {
-        console.log('📦 Falling back to credential.id');
+        console.log('📦 Falling back to credential.id for credentialID');
         try {
           rawCredentialID = Buffer.from(credential.id, 'base64');
+          console.log('✅ Using credential.id as fallback for credentialID');
         } catch (e) {
           console.error('❌ Failed to convert credential.id:', e);
         }
       }
       
-      // Method 3: Last resort for development
+      // Method 3: Try to extract public key from credential.response
+      if (!rawPublicKey && credential.response) {
+        console.log('📦 Trying to extract public key from credential.response');
+        
+        // Check for publicKey in response
+        if (credential.response.publicKey) {
+          try {
+            rawPublicKey = Buffer.from(credential.response.publicKey);
+            console.log('✅ Found publicKey in credential.response');
+          } catch (e) {
+            console.error('❌ Failed to convert response.publicKey:', e);
+          }
+        }
+        
+        // Check for attestationObject (contains public key)
+        if (!rawPublicKey && credential.response.attestationObject) {
+          console.log('📦 attestationObject present - would need parsing in production');
+          // In production, you'd need to parse the attestationObject with a library like cbor
+          // This is a simplified fallback for development
+          if (!isProduction) {
+            console.warn('⚠️ DEVELOPMENT: Using credential.id as fallback for public key');
+            // This is NOT secure for production - only for testing
+            rawPublicKey = Buffer.from(credential.id, 'base64');
+          }
+        }
+      }
+      
+      // Method 4: Last resort for development
       if (!rawCredentialID && !isProduction) {
         console.warn('⚠️ DEVELOPMENT: Generating temporary credential ID');
         rawCredentialID = crypto.randomBytes(32);
+      }
+      
+      if (!rawPublicKey && !isProduction) {
+        console.warn('⚠️ DEVELOPMENT: Generating temporary public key');
         rawPublicKey = crypto.randomBytes(65);
       }
 
+      // Validate we have the required data
       if (!rawCredentialID) {
         console.error('❌ Could not extract credential ID');
-        return res.status(500).json({ error: 'Failed to process credential' });
+        return res.status(500).json({ 
+          error: 'Failed to process credential',
+          details: 'Missing credential ID'
+        });
       }
 
       if (!rawPublicKey) {
         console.error('❌ Could not extract public key');
-        return res.status(500).json({ error: 'Failed to process public key' });
+        return res.status(500).json({ 
+          error: 'Failed to process credential',
+          details: 'Missing public key'
+        });
       }
 
+      console.log('Raw credentialID type:', typeof rawCredentialID);
+      console.log('Raw credentialID is Buffer?', Buffer.isBuffer(rawCredentialID));
+      console.log('Raw publicKey type:', typeof rawPublicKey);
+      console.log('Raw publicKey is Buffer?', Buffer.isBuffer(rawPublicKey));
+      
       // Convert to base64 for storage
       let credentialIdBase64, publicKeyBase64;
       try {
@@ -331,6 +397,9 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
         publicKeyBase64 = Buffer.isBuffer(rawPublicKey)
           ? rawPublicKey.toString('base64')
           : Buffer.from(rawPublicKey).toString('base64');
+        
+        console.log('✅ CredentialID converted to base64, length:', credentialIdBase64.length);
+        console.log('✅ PublicKey converted to base64, length:', publicKeyBase64.length);
       } catch (e) {
         console.error('❌ Buffer conversion error:', e);
         return res.status(500).json({ error: 'Failed to convert credential data' });
@@ -402,6 +471,7 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
     }
   } catch (error) {
     console.error('❌ WebAuthn registration complete error:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({ error: error.message });
   }
 });
@@ -477,6 +547,18 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
       return res.status(404).json({ error: 'Credential not found' });
     }
 
+    console.log('✅ Credential found for user:', storedCredential.users.id);
+
+    // Safely convert publicKey from base64 to Buffer
+    let publicKeyBuffer;
+    try {
+      publicKeyBuffer = Buffer.from(storedCredential.public_key, 'base64');
+      console.log('✅ PublicKey converted successfully');
+    } catch (bufferError) {
+      console.error('❌ Failed to convert publicKey from base64:', bufferError);
+      return res.status(500).json({ error: 'Failed to process public key' });
+    }
+
     const verification = await verifyAuthenticationResponse({
       response: credential,
       expectedChallenge: storedData.challenge,
@@ -484,14 +566,15 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
       expectedRPID: rpID,
       credential: {
         id: storedCredential.credential_id,
-        publicKey: Buffer.from(storedCredential.public_key, 'base64'),
-        counter: storedCredential.counter,
-        transports: storedCredential.transports,
+        publicKey: publicKeyBuffer,
+        counter: storedCredential.counter || 0,
+        transports: storedCredential.transports || ['internal'],
       },
       requireUserVerification: true,
     });
 
     if (verification.verified) {
+      // Update counter
       await supabase
         .from('user_credentials')
         .update({ 
@@ -508,6 +591,7 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
         user: storedCredential.users
       });
     } else {
+      console.log('❌ Login verification failed');
       res.status(400).json({ verified: false });
     }
   } catch (error) {
@@ -780,164 +864,69 @@ app.get("/api/diagnostic", async (req, res) => {
     results.supabase.connected = !usersError;
     results.supabase.tables.users = usersError ? '❌' : '✅';
 
+    // Test user_credentials table
+    const { error: credError } = await supabase
+      .from('user_credentials')
+      .select('count', { count: 'exact', head: true });
+    
+    results.supabase.tables.user_credentials = credError ? '❌' : '✅';
+
     res.json({ success: true, ...results });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// ============ SERVE FRONTEND - FIXED VERSION ============
+// ============ SERVE FRONTEND ============
 const distPath = path.join(__dirname, 'dist');
 
 if (isProduction) {
   console.log(`\n📦 Production mode: Serving static files from ${distPath}`);
   
-  // Check if dist folder exists
   if (fs.existsSync(distPath)) {
-    // Serve static files first
     app.use(express.static(distPath));
     
-    // Log dist contents for debugging
     try {
       const files = fs.readdirSync(distPath);
       console.log('📄 Files in dist:', files.join(', '));
-      
-      // Check for index.html specifically
       if (files.includes('index.html')) {
         console.log('✅ index.html found in dist');
-      } else {
-        console.error('❌ index.html NOT found in dist!');
       }
     } catch (e) {
       console.error('❌ Cannot read dist folder:', e.message);
     }
     
-    // Handle all non-API routes by serving index.html (FIXED: using app.use instead of app.get('*'))
     app.use((req, res, next) => {
-      // Skip API routes
-      if (req.path.startsWith('/api')) {
-        return next();
-      }
-      
-      // Serve index.html for client-side routing
-      const indexPath = path.join(distPath, 'index.html');
-      
-      if (fs.existsSync(indexPath)) {
-        res.sendFile(indexPath);
-      } else {
-        console.error('❌ index.html not found at:', indexPath);
-        res.status(500).send(`
-          <html>
-            <head><title>Error</title></head>
-            <body>
-              <h1>Frontend build not found</h1>
-              <p>The index.html file is missing from the dist folder.</p>
-              <p>Expected path: ${indexPath}</p>
-            </body>
-          </html>
-        `);
-      }
+      if (req.path.startsWith('/api')) return next();
+      res.sendFile(path.join(distPath, 'index.html'));
     });
     
-    console.log('✅ Static file serving enabled with client-side routing');
+    console.log('✅ Static file serving enabled');
   } else {
     console.error('❌ dist folder not found at:', distPath);
-    console.log('📁 Current directory:', __dirname);
-    
-    // List files in current directory for debugging
-    try {
-      const files = fs.readdirSync(__dirname);
-      console.log('📁 Files in current directory:', files.join(', '));
-    } catch (e) {
-      console.error('❌ Cannot read current directory:', e.message);
-    }
-    
-    // Serve a helpful error page
-    app.use((req, res) => {
-      if (req.path.startsWith('/api')) {
-        return res.status(404).json({ error: 'API endpoint not found' });
-      }
-      
-      res.status(500).send(`
-        <html>
-          <head><title>Build Error</title></head>
-          <body>
-            <h1>Frontend build not found</h1>
-            <p>The dist folder does not exist. Please run <code>npm run build</code> to build the frontend.</p>
-            <p>Expected path: ${distPath}</p>
-          </body>
-        </html>
-      `);
-    });
   }
 } else {
-  console.log(`\n🔄 Development mode: API only, frontend running on Vite dev server`);
-  
-  // In development, handle API routes and return helpful message for others
-  app.use((req, res, next) => {
-    if (!req.path.startsWith('/api')) {
-      return res.status(404).json({ 
-        error: 'In development mode, please use the Vite dev server on http://localhost:5173' 
-      });
-    }
-    next();
-  });
+  console.log(`\n🔄 Development mode: API only`);
 }
 
 // ============ ERROR HANDLING ============
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
-    res.status(404).json({ 
-      error: "API endpoint not found", 
-      path: req.url
-    });
+    res.status(404).json({ error: "API endpoint not found" });
   }
 });
 
 app.use((err, req, res, next) => {
   console.error("❌ Unhandled error:", err);
-  res.status(500).json({ 
-    error: "Internal server error",
-    message: err.message 
-  });
+  res.status(500).json({ error: "Internal server error" });
 });
 
 // ============ START SERVER ============
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
-  console.log(`🚀 SERVER STARTED SUCCESSFULLY`);
+  console.log(`🚀 SERVER STARTED ON PORT ${PORT}`);
   console.log('='.repeat(60));
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`🔗 APP_BASE_URL: ${process.env.APP_BASE_URL}`);
-  console.log(`💰 PayFast: ${process.env.PAYFAST_BASE_URL?.includes('sandbox') ? 'SANDBOX' : 'LIVE'}`);
-  console.log(`🆔 Merchant ID: ${process.env.PAYFAST_MERCHANT_ID}`);
-  console.log(`🌍 Mode: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
-  console.log(`🔐 WebAuthn: Configured with RP ID: ${rpID}`);
-  console.log('='.repeat(60));
-  console.log(`📝 API Endpoints:`);
-  console.log(`   🔐 WEBAUTHN (FINGERPRINT):`);
-  console.log(`   GET  /api/webauthn/has-devices - Check if any devices exist`);
-  console.log(`   POST /api/webauthn/register/begin - Start fingerprint registration (no data needed)`);
-  console.log(`   POST /api/webauthn/register/complete - Complete fingerprint registration`);
-  console.log(`   POST /api/webauthn/login/begin - Start fingerprint login (no data needed)`);
-  console.log(`   POST /api/webauthn/login/complete - Complete fingerprint login`);
-  console.log(`   GET  /api/webauthn/devices/:userId - List user's registered devices`);
-  console.log(`   DELETE /api/webauthn/devices/:deviceId - Remove a device`);
-  console.log(`   GET  /api/debug/challenges - Debug: View active challenges`);
-  console.log('   ' + '-'.repeat(40));
-  console.log(`   💰 PAYFAST:`);
-  console.log(`   GET  http://localhost:${PORT}/api/health`);
-  console.log(`   GET  http://localhost:${PORT}/api/diagnostic`);
-  console.log(`   GET  http://localhost:${PORT}/api/payfast/test-notify`);
-  console.log(`   POST http://localhost:${PORT}/api/payfast/test-notify`);
-  console.log(`   POST http://localhost:${PORT}/api/payfast/notify (webhook)`);
-  
-  if (!isProduction) {
-    console.log(`\n🎨 Frontend:`);
-    console.log(`   http://localhost:5173 (Vite dev server)`);
-  } else {
-    console.log(`\n🎨 Frontend:`);
-    console.log(`   ${process.env.APP_BASE_URL}`);
-  }
+  console.log(`🔐 WebAuthn RP ID: ${rpID}`);
+  console.log(`🌐 Origin: ${expectedOrigin}`);
   console.log('='.repeat(60) + '\n');
 });
