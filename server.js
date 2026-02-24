@@ -786,30 +786,158 @@ app.get("/api/diagnostic", async (req, res) => {
   }
 });
 
-// ============ SERVE FRONTEND ============
+// ============ SERVE FRONTEND - FIXED VERSION ============
 const distPath = path.join(__dirname, 'dist');
 
 if (isProduction) {
-  console.log(`\n📦 Serving static files from ${distPath}`);
+  console.log(`\n📦 Production mode: Serving static files from ${distPath}`);
   
+  // Check if dist folder exists
   if (fs.existsSync(distPath)) {
+    // Serve static files first
     app.use(express.static(distPath));
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api')) return next();
-      res.sendFile(path.join(distPath, 'index.html'));
+    
+    // Log dist contents for debugging
+    try {
+      const files = fs.readdirSync(distPath);
+      console.log('📄 Files in dist:', files.join(', '));
+      
+      // Check for index.html specifically
+      if (files.includes('index.html')) {
+        console.log('✅ index.html found in dist');
+      } else {
+        console.error('❌ index.html NOT found in dist!');
+      }
+    } catch (e) {
+      console.error('❌ Cannot read dist folder:', e.message);
+    }
+    
+    // Handle all non-API routes by serving index.html (FIXED: using app.use instead of app.get('*'))
+    app.use((req, res, next) => {
+      // Skip API routes
+      if (req.path.startsWith('/api')) {
+        return next();
+      }
+      
+      // Serve index.html for client-side routing
+      const indexPath = path.join(distPath, 'index.html');
+      
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        console.error('❌ index.html not found at:', indexPath);
+        res.status(500).send(`
+          <html>
+            <head><title>Error</title></head>
+            <body>
+              <h1>Frontend build not found</h1>
+              <p>The index.html file is missing from the dist folder.</p>
+              <p>Expected path: ${indexPath}</p>
+            </body>
+          </html>
+        `);
+      }
     });
-    console.log('✅ Static file serving enabled');
+    
+    console.log('✅ Static file serving enabled with client-side routing');
   } else {
-    console.error('❌ dist folder not found!');
+    console.error('❌ dist folder not found at:', distPath);
+    console.log('📁 Current directory:', __dirname);
+    
+    // List files in current directory for debugging
+    try {
+      const files = fs.readdirSync(__dirname);
+      console.log('📁 Files in current directory:', files.join(', '));
+    } catch (e) {
+      console.error('❌ Cannot read current directory:', e.message);
+    }
+    
+    // Serve a helpful error page
+    app.use((req, res) => {
+      if (req.path.startsWith('/api')) {
+        return res.status(404).json({ error: 'API endpoint not found' });
+      }
+      
+      res.status(500).send(`
+        <html>
+          <head><title>Build Error</title></head>
+          <body>
+            <h1>Frontend build not found</h1>
+            <p>The dist folder does not exist. Please run <code>npm run build</code> to build the frontend.</p>
+            <p>Expected path: ${distPath}</p>
+          </body>
+        </html>
+      `);
+    });
   }
+} else {
+  console.log(`\n🔄 Development mode: API only, frontend running on Vite dev server`);
+  
+  // In development, handle API routes and return helpful message for others
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api')) {
+      return res.status(404).json({ 
+        error: 'In development mode, please use the Vite dev server on http://localhost:5173' 
+      });
+    }
+    next();
+  });
 }
+
+// ============ ERROR HANDLING ============
+app.use((req, res) => {
+  if (req.path.startsWith('/api')) {
+    res.status(404).json({ 
+      error: "API endpoint not found", 
+      path: req.url
+    });
+  }
+});
+
+app.use((err, req, res, next) => {
+  console.error("❌ Unhandled error:", err);
+  res.status(500).json({ 
+    error: "Internal server error",
+    message: err.message 
+  });
+});
 
 // ============ START SERVER ============
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
-  console.log(`🚀 SERVER STARTED ON PORT ${PORT}`);
+  console.log(`🚀 SERVER STARTED SUCCESSFULLY`);
   console.log('='.repeat(60));
-  console.log(`🔐 WebAuthn RP ID: ${rpID}`);
-  console.log(`🌐 Origin: ${expectedOrigin}`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🔗 APP_BASE_URL: ${process.env.APP_BASE_URL}`);
+  console.log(`💰 PayFast: ${process.env.PAYFAST_BASE_URL?.includes('sandbox') ? 'SANDBOX' : 'LIVE'}`);
+  console.log(`🆔 Merchant ID: ${process.env.PAYFAST_MERCHANT_ID}`);
+  console.log(`🌍 Mode: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
+  console.log(`🔐 WebAuthn: Configured with RP ID: ${rpID}`);
+  console.log('='.repeat(60));
+  console.log(`📝 API Endpoints:`);
+  console.log(`   🔐 WEBAUTHN (FINGERPRINT):`);
+  console.log(`   GET  /api/webauthn/has-devices - Check if any devices exist`);
+  console.log(`   POST /api/webauthn/register/begin - Start fingerprint registration (no data needed)`);
+  console.log(`   POST /api/webauthn/register/complete - Complete fingerprint registration`);
+  console.log(`   POST /api/webauthn/login/begin - Start fingerprint login (no data needed)`);
+  console.log(`   POST /api/webauthn/login/complete - Complete fingerprint login`);
+  console.log(`   GET  /api/webauthn/devices/:userId - List user's registered devices`);
+  console.log(`   DELETE /api/webauthn/devices/:deviceId - Remove a device`);
+  console.log(`   GET  /api/debug/challenges - Debug: View active challenges`);
+  console.log('   ' + '-'.repeat(40));
+  console.log(`   💰 PAYFAST:`);
+  console.log(`   GET  http://localhost:${PORT}/api/health`);
+  console.log(`   GET  http://localhost:${PORT}/api/diagnostic`);
+  console.log(`   GET  http://localhost:${PORT}/api/payfast/test-notify`);
+  console.log(`   POST http://localhost:${PORT}/api/payfast/test-notify`);
+  console.log(`   POST http://localhost:${PORT}/api/payfast/notify (webhook)`);
+  
+  if (!isProduction) {
+    console.log(`\n🎨 Frontend:`);
+    console.log(`   http://localhost:5173 (Vite dev server)`);
+  } else {
+    console.log(`\n🎨 Frontend:`);
+    console.log(`   ${process.env.APP_BASE_URL}`);
+  }
   console.log('='.repeat(60) + '\n');
 });
