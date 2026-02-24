@@ -5,7 +5,7 @@ import FaceLogin from './components/FaceLogin';
 import FaceRegistration from './components/FaceRegistration';
 import Dashboard from './components/Dashboard';
 import { User } from './lib/supabase';
-import { Sun, Moon, Fingerprint, Smartphone, Key } from 'lucide-react';
+import { Sun, Moon, Fingerprint, Smartphone, Key, Loader } from 'lucide-react';
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 
 function AppContent() {
@@ -14,9 +14,8 @@ function AppContent() {
   const [view, setView] = useState<'login' | 'register'>('login');
   const [googleLoading, setGoogleLoading] = useState(false);
   const [fingerprintLoading, setFingerprintLoading] = useState(false);
+  const [fingerprintStatus, setFingerprintStatus] = useState<string>('');
   const [showFingerprintModal, setShowFingerprintModal] = useState(false);
-  const [fingerprintEmail, setFingerprintEmail] = useState('');
-  const [fingerprintStep, setFingerprintStep] = useState<'login' | 'register'>('login');
   const [devices, setDevices] = useState<any[]>([]);
   const [showDeviceManager, setShowDeviceManager] = useState(false);
 
@@ -29,7 +28,7 @@ function AppContent() {
 
   const fetchDevices = async () => {
     try {
-      const response = await fetch(`/api/webauthn/devices/${user?.id}`);
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/devices/${user?.id}`);
       const data = await response.json();
       setDevices(data.devices || []);
     } catch (error) {
@@ -56,33 +55,51 @@ function AppContent() {
     }
   };
 
-  // Handle fingerprint login
+  // PURE FINGERPRINT LOGIN - Like banking apps (no email required)
   const handleFingerprintLogin = async () => {
     try {
       setFingerprintLoading(true);
+      setFingerprintStatus('Checking for registered devices...');
       
-      // Step 1: Get authentication options from server
-      const optsResponse = await fetch('/api/webauthn/login/begin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      });
+      // Step 1: Check if any devices are registered in the system
+      const checkResponse = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/has-devices`);
+      const { hasDevices } = await checkResponse.json();
       
-      const optsData = await optsResponse.json();
-      
-      if (optsData.error || optsData === null) {
-        // No fingerprint registered - show registration modal
-        setFingerprintStep('register');
-        setShowFingerprintModal(true);
+      if (!hasDevices) {
+        // No devices registered yet - prompt to register (like first-time banking app setup)
+        setFingerprintStatus('No devices found. Setting up first-time registration...');
+        setTimeout(() => {
+          setShowFingerprintModal(true);
+          setFingerprintStatus('');
+        }, 1000);
         setFingerprintLoading(false);
         return;
       }
       
-      // Step 2: Start browser authentication (fingerprint scan)
+      // Step 2: Get authentication options from server (no userId needed!)
+      setFingerprintStatus('Preparing authentication...');
+      const optsResponse = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/login/begin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}) // Empty body - pure biometric
+      });
+      
+      const optsData = await optsResponse.json();
+      
+      if (optsData.error || !optsData) {
+        setFingerprintStatus('Authentication failed');
+        setTimeout(() => setFingerprintStatus(''), 2000);
+        setFingerprintLoading(false);
+        return;
+      }
+      
+      // Step 3: Start browser authentication (fingerprint scan)
+      setFingerprintStatus('Scan your fingerprint...');
       const authResp = await startAuthentication({ optionsJSON: optsData });
       
-      // Step 3: Verify with server
-      const verifResp = await fetch('/api/webauthn/login/complete', {
+      // Step 4: Verify with server
+      setFingerprintStatus('Verifying...');
+      const verifResp = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/login/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -94,92 +111,102 @@ function AppContent() {
       const verifData = await verifResp.json();
       
       if (verifData.verified && verifData.user) {
+        setFingerprintStatus('Login successful!');
         console.log('✅ Fingerprint login successful');
         login(verifData.user);
       } else {
-        alert('Fingerprint authentication failed');
+        setFingerprintStatus('Authentication failed');
+        setTimeout(() => setFingerprintStatus(''), 2000);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Fingerprint login error:', error);
-      alert('Fingerprint authentication failed');
+      if (error.name === 'NotAllowedError') {
+        setFingerprintStatus('Authentication cancelled');
+      } else if (error.name === 'NotFoundError') {
+        setFingerprintStatus('No fingerprint device found');
+        setTimeout(() => {
+          setShowFingerprintModal(true);
+        }, 1500);
+      } else {
+        setFingerprintStatus('Authentication failed');
+      }
+      setTimeout(() => setFingerprintStatus(''), 2000);
     } finally {
       setFingerprintLoading(false);
-      setShowFingerprintModal(false);
     }
   };
 
-  // Handle fingerprint registration
-  const handleFingerprintRegister = async () => {
-    if (!fingerprintEmail) {
-      alert('Please enter your email');
-      return;
-    }
-
+  // Handle fingerprint registration for new users (like first-time banking app setup)
+  const handleRegisterFingerprint = async () => {
     try {
       setFingerprintLoading(true);
+      setFingerprintStatus('Preparing registration...');
+      setShowFingerprintModal(false);
       
-      // First, check if user exists or create them
-      const { data: { session } } = await supabase.auth.signInWithOtp({
-        email: fingerprintEmail,
-        options: {
-          shouldCreateUser: true,
-        }
-      });
-
-      // Step 1: Get registration options from server
-      const optsResponse = await fetch('/api/webauthn/register/begin', {
+      // Step 1: Get registration options from server (no data needed!)
+      const optsResponse = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/register/begin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: session?.user?.id || fingerprintEmail,
-          username: fingerprintEmail.split('@')[0]
-        })
+        body: JSON.stringify({}) // Empty body - server generates temp user
       });
       
       const optsData = await optsResponse.json();
       
       if (optsData.error) {
         console.error('Registration options error:', optsData.error);
-        alert('Failed to start fingerprint registration');
+        setFingerprintStatus('Registration failed');
+        setTimeout(() => setFingerprintStatus(''), 2000);
         return;
       }
       
       // Step 2: Start browser registration (fingerprint scan)
+      setFingerprintStatus('Scan your fingerprint to register...');
       const attResp = await startRegistration({ optionsJSON: optsData });
       
       // Step 3: Verify with server
-      const verifResp = await fetch('/api/webauthn/register/complete', {
+      setFingerprintStatus('Completing registration...');
+      const verifResp = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/register/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: session?.user?.id || fingerprintEmail,
-          credential: attResp
+          credential: attResp,
+          challengeId: optsData.challengeId
         })
       });
       
       const verifData = await verifResp.json();
       
-      if (verifData.verified) {
+      if (verifData.verified && verifData.user) {
+        setFingerprintStatus('Registration successful! Logging you in...');
         console.log('✅ Fingerprint registered successfully');
-        alert('Fingerprint registered successfully! You can now login with your fingerprint.');
-        setShowFingerprintModal(false);
-        setFingerprintEmail('');
+        
+        // Auto-login after registration (like banking apps)
+        setTimeout(() => {
+          login(verifData.user);
+        }, 1000);
       } else {
-        alert('Fingerprint registration failed');
+        setFingerprintStatus('Registration failed');
+        setTimeout(() => setFingerprintStatus(''), 2000);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Fingerprint registration error:', error);
-      alert('Fingerprint registration failed');
+      if (error.name === 'NotAllowedError') {
+        setFingerprintStatus('Registration cancelled');
+      } else {
+        setFingerprintStatus('Registration failed');
+      }
+      setTimeout(() => setFingerprintStatus(''), 2000);
     } finally {
       setFingerprintLoading(false);
     }
   };
 
+  // Handle remove device
   const handleRemoveDevice = async (deviceId: string) => {
     if (!user) return;
     
     try {
-      const response = await fetch(`/api/webauthn/devices/${deviceId}`, {
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/devices/${deviceId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: user.id })
@@ -262,6 +289,14 @@ function AppContent() {
               )}
               
               <button
+                onClick={handleRegisterFingerprint}
+                disabled={fingerprintLoading}
+                className="w-full mb-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium py-2 px-3 rounded-lg transition-colors disabled:bg-gray-400"
+              >
+                {fingerprintLoading ? 'Registering...' : 'Register New Fingerprint'}
+              </button>
+              
+              <button
                 onClick={() => setShowDeviceManager(false)}
                 className={`w-full text-sm font-medium py-2 px-3 rounded-lg transition-colors ${
                   theme === 'dark'
@@ -310,12 +345,12 @@ function AppContent() {
           <p className={`${
             theme === 'dark' ? 'text-gray-300' : 'text-gray-600'
           }`}>
-            Choose your preferred login method
+            Like banking apps - Just tap and go!
           </p>
         </div>
 
         {/* Authentication Options Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           {/* Google Sign-In */}
           <button
             onClick={handleGoogleSignIn}
@@ -335,18 +370,45 @@ function AppContent() {
             <span>{googleLoading ? 'Signing in...' : 'Google'}</span>
           </button>
 
-          {/* Fingerprint Login */}
+          {/* PURE FINGERPRINT LOGIN - Like banking apps (no email required) */}
           <button
             onClick={handleFingerprintLogin}
             disabled={fingerprintLoading}
-            className={`flex flex-col items-center gap-3 p-6 rounded-xl font-medium transition-all duration-200 ${
+            className={`flex flex-col items-center gap-3 p-6 rounded-xl font-medium transition-all duration-200 relative ${
               theme === 'dark'
                 ? 'bg-gray-800 text-white hover:bg-gray-700 border border-gray-700'
                 : 'bg-white text-gray-800 hover:shadow-xl border border-gray-200'
             } shadow-md hover:scale-105`}
           >
-            <Fingerprint className="w-8 h-8 text-purple-600" />
-            <span>{fingerprintLoading ? 'Scanning...' : 'Fingerprint'}</span>
+            <Fingerprint className={`w-8 h-8 text-purple-600 ${
+              fingerprintLoading ? 'animate-pulse' : ''
+            }`} />
+            <span>
+              {fingerprintLoading ? 'Processing...' : 'Fingerprint Login'}
+            </span>
+            
+            {/* Status overlay */}
+            {fingerprintStatus && (
+              <div className={`absolute inset-0 flex items-center justify-center rounded-xl ${
+                theme === 'dark' ? 'bg-gray-800/95' : 'bg-white/95'
+              } backdrop-blur-sm`}>
+                <div className="flex items-center gap-2">
+                  {fingerprintStatus.includes('Scan') && (
+                    <Fingerprint className="w-5 h-5 text-purple-600 animate-pulse" />
+                  )}
+                  {fingerprintStatus.includes('Verifying') && (
+                    <Loader className="w-5 h-5 text-purple-600 animate-spin" />
+                  )}
+                  {fingerprintStatus.includes('Preparing') && (
+                    <Loader className="w-5 h-5 text-purple-600 animate-spin" />
+                  )}
+                  {fingerprintStatus.includes('Checking') && (
+                    <Loader className="w-5 h-5 text-purple-600 animate-spin" />
+                  )}
+                  <span className="text-sm font-medium">{fingerprintStatus}</span>
+                </div>
+              </div>
+            )}
           </button>
 
           {/* Face Login */}
@@ -365,92 +427,80 @@ function AppContent() {
             </svg>
             <span>Face Login</span>
           </button>
-
-          {/* Register Fingerprint Button */}
-          <button
-            onClick={() => {
-              setFingerprintStep('register');
-              setShowFingerprintModal(true);
-            }}
-            className={`flex flex-col items-center gap-3 p-6 rounded-xl font-medium transition-all duration-200 ${
-              theme === 'dark'
-                ? 'bg-purple-900 text-white hover:bg-purple-800 border border-purple-700'
-                : 'bg-purple-100 text-purple-800 hover:bg-purple-200 border border-purple-300'
-            } shadow-md hover:scale-105`}
-          >
-            <Smartphone className="w-8 h-8" />
-            <span>Register Fingerprint</span>
-          </button>
         </div>
 
-        {/* Fingerprint Registration Modal */}
+        {/* First-time Registration Modal - Like banking app setup */}
         {showFingerprintModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className={`max-w-md w-full rounded-xl shadow-2xl p-6 ${
+            <div className={`rounded-lg p-6 max-w-md w-full ${
               theme === 'dark' ? 'bg-gray-800' : 'bg-white'
             }`}>
-              <h2 className={`text-2xl font-bold mb-4 ${
-                theme === 'dark' ? 'text-white' : 'text-gray-800'
-              }`}>
-                {fingerprintStep === 'login' ? 'Login with Fingerprint' : 'Register Fingerprint'}
-              </h2>
+              <div className="text-center mb-4">
+                <Fingerprint className="w-16 h-16 text-purple-600 mx-auto mb-2" />
+                <h3 className={`text-xl font-bold ${
+                  theme === 'dark' ? 'text-white' : 'text-gray-800'
+                }`}>
+                  Set Up Fingerprint Login
+                </h3>
+              </div>
               
-              <p className={`mb-4 text-sm ${
+              <p className={`text-sm mb-6 ${
                 theme === 'dark' ? 'text-gray-300' : 'text-gray-600'
               }`}>
-                {fingerprintStep === 'login' 
-                  ? 'Scan your fingerprint to login.' 
-                  : 'Enter your email to register your fingerprint. You can then login with your fingerprint anytime.'}
+                Like banking apps, you can use your fingerprint to securely log in. 
+                This will create your account and register your fingerprint in one step.
               </p>
               
-              {fingerprintStep === 'register' && (
-                <input
-                  type="email"
-                  value={fingerprintEmail}
-                  onChange={(e) => setFingerprintEmail(e.target.value)}
-                  placeholder="Enter your email"
-                  className={`w-full px-4 py-2 mb-4 rounded-lg border ${
-                    theme === 'dark'
-                      ? 'bg-gray-700 border-gray-600 text-white'
-                      : 'bg-white border-gray-300 text-gray-900'
-                  }`}
-                />
-              )}
+              <div className="bg-purple-50 dark:bg-gray-700 p-4 rounded-lg mb-6">
+                <p className="text-sm text-purple-800 dark:text-purple-200">
+                  <strong>🔒 Secure & Private:</strong> Your fingerprint never leaves your device. 
+                  We only store a encrypted mathematical representation.
+                </p>
+              </div>
               
               <div className="flex gap-3">
                 <button
-                  onClick={fingerprintStep === 'login' ? handleFingerprintLogin : handleFingerprintRegister}
+                  onClick={handleRegisterFingerprint}
                   disabled={fingerprintLoading}
-                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:bg-gray-400"
+                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:bg-gray-400 flex items-center justify-center gap-2"
                 >
-                  {fingerprintLoading ? 'Processing...' : fingerprintStep === 'login' ? 'Scan Fingerprint' : 'Register'}
+                  {fingerprintLoading ? (
+                    <>
+                      <Loader className="w-4 h-4 animate-spin" />
+                      <span>Setting up...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Fingerprint className="w-4 h-4" />
+                      <span>Set Up Fingerprint</span>
+                    </>
+                  )}
                 </button>
                 <button
-                  onClick={() => {
-                    setShowFingerprintModal(false);
-                    setFingerprintEmail('');
-                  }}
-                  className={`flex-1 font-medium py-2 px-4 rounded-lg transition-colors ${
+                  onClick={() => setShowFingerprintModal(false)}
+                  className={`flex-1 font-medium py-3 px-4 rounded-lg transition-colors ${
                     theme === 'dark'
                       ? 'bg-gray-700 hover:bg-gray-600 text-white'
                       : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
                   }`}
                 >
-                  Cancel
+                  Later
                 </button>
               </div>
-              
-              {fingerprintStep === 'login' && (
-                <button
-                  onClick={() => setFingerprintStep('register')}
-                  className="mt-3 text-sm text-purple-600 hover:text-purple-800 dark:text-purple-400"
-                >
-                  Don't have fingerprint registered? Register here
-                </button>
-              )}
             </div>
           </div>
         )}
+
+        {/* Info Box - Banking app style */}
+        <div className={`text-center p-4 rounded-lg mb-6 ${
+          theme === 'dark' ? 'bg-gray-800' : 'bg-blue-50'
+        }`}>
+          <p className={theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}>
+            <Fingerprint className="inline w-5 h-5 mr-2 text-purple-600" />
+            <strong>Like ABSA & TymeBank:</strong> Just tap the fingerprint icon to login - 
+            {!showFingerprintModal ? ' No email or password needed!' : ' Set up once, use forever!'}
+          </p>
+        </div>
 
         {/* Divider */}
         <div className="flex items-center justify-center gap-3 mb-6">
@@ -497,8 +547,8 @@ function AppContent() {
         <div className={`mt-8 text-center text-sm ${
           theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
         }`}>
-          <p>© 2026 Face Recognition App. All rights reserved.</p>
-          <p className="mt-1">Supports Google, Fingerprint, and Face Authentication</p>
+          <p>© 2026 Secure Authentication App. All rights reserved.</p>
+          <p className="mt-1">Pure biometric login - Just like your banking app</p>
         </div>
       </div>
     </div>
