@@ -198,7 +198,7 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
       authenticatorSelection: {
         authenticatorAttachment: 'platform',
         userVerification: 'required',
-        residentKey: 'required',
+        residentKey: 'preferred', // Changed from 'required' for better mobile compatibility
       },
       supportedAlgorithmIDs: [-7, -257],
     });
@@ -476,7 +476,7 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
   }
 });
 
-// ✅ LOGIN BEGIN - PURE BIOMETRIC
+// ✅ LOGIN BEGIN - PURE BIOMETRIC - FIXED
 app.post('/api/webauthn/login/begin', async (req, res) => {
   try {
     console.log('🔐 Starting WebAuthn authentication');
@@ -494,16 +494,29 @@ app.post('/api/webauthn/login/begin', async (req, res) => {
       return res.status(404).json({ error: 'No registered devices found' });
     }
 
-    const allowCredentials = credentials.map(cred => ({
-      id: Buffer.from(cred.credential_id, 'base64'),
-      type: 'public-key',
-      transports: cred.transports || ['internal'],
-    }));
+    console.log(`📊 Found ${credentials.length} credentials`);
+
+    // Format credentials correctly for SimpleWebAuthn
+    // They expect base64url strings, not Buffer objects
+    const allowCredentials = credentials.map(cred => {
+      // Ensure credential_id is treated as a base64url string
+      // Remove any padding if present
+      const cleanCredentialId = cred.credential_id.replace(/=/g, '');
+      
+      return {
+        id: cleanCredentialId, // Pass as string, not Buffer
+        type: 'public-key',
+        transports: cred.transports || ['internal', 'hybrid', 'usb', 'nfc', 'ble'],
+      };
+    });
+
+    console.log(`✅ Formatted ${allowCredentials.length} credentials for WebAuthn`);
 
     const options = await generateAuthenticationOptions({
       rpID,
       allowCredentials,
       userVerification: 'required',
+      timeout: 60000, // 60 seconds timeout for mobile devices
     });
 
     const challengeId = crypto.randomBytes(16).toString('hex');
@@ -513,9 +526,16 @@ app.post('/api/webauthn/login/begin', async (req, res) => {
     });
 
     console.log(`✅ Authentication options generated: ${challengeId}`);
+    console.log(`📤 Sending ${allowCredentials.length} credentials to client`);
+    
     res.json({ ...options, challengeId });
   } catch (error) {
     console.error('❌ Login begin error:', error);
+    console.error('Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -526,6 +546,8 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
     const { credential, challengeId } = req.body;
     
     console.log('\n🔐 LOGIN COMPLETE - START');
+    console.log('Challenge ID:', challengeId);
+    console.log('Credential ID:', credential?.id?.substring(0, 20) + '...');
     
     if (!credential || !challengeId) {
       return res.status(400).json({ error: 'Missing data' });
@@ -533,8 +555,11 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
 
     const storedData = challenges.get(challengeId);
     if (!storedData) {
+      console.error('❌ No session found for challenge ID:', challengeId);
       return res.status(400).json({ error: 'No session found' });
     }
+
+    console.log('✅ Session found, looking up credential in database');
 
     const { data: storedCredential, error: dbError } = await supabase
       .from('user_credentials')
@@ -559,6 +584,7 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
       return res.status(500).json({ error: 'Failed to process public key' });
     }
 
+    console.log('🔐 Verifying authentication response...');
     const verification = await verifyAuthenticationResponse({
       response: credential,
       expectedChallenge: storedData.challenge,
@@ -573,6 +599,8 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
       requireUserVerification: true,
     });
 
+    console.log('✅ Verification result:', { verified: verification.verified });
+
     if (verification.verified) {
       // Update counter
       await supabase
@@ -583,7 +611,7 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
         })
         .eq('credential_id', credential.id);
 
-      console.log(`✅ Login successful: ${storedCredential.users.id}`);
+      console.log(`✅ Login successful for user: ${storedCredential.users.id}`);
       challenges.delete(challengeId);
       
       res.json({ 
@@ -596,6 +624,11 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
     }
   } catch (error) {
     console.error('❌ Login complete error:', error);
+    console.error('Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -644,6 +677,33 @@ app.get('/api/debug/challenges', (req, res) => {
     keys: Array.from(challenges.keys()),
     serverTime: Date.now()
   });
+});
+
+// ✅ DEBUG CREDENTIALS - New endpoint to check stored credentials
+app.get('/api/webauthn/debug-credentials', async (req, res) => {
+  try {
+    const { data: credentials, error } = await supabase
+      .from('user_credentials')
+      .select('credential_id, transports, user_id, device_type');
+
+    if (error) throw error;
+
+    const formatted = credentials.map(cred => ({
+      credential_id_preview: cred.credential_id.substring(0, 20) + '...',
+      credential_id_length: cred.credential_id.length,
+      clean_id: cred.credential_id.replace(/=/g, ''),
+      transports: cred.transports,
+      user_id: cred.user_id,
+      device_type: cred.device_type
+    }));
+
+    res.json({
+      count: credentials.length,
+      credentials: formatted
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ✅ HEALTH CHECK
@@ -896,17 +956,19 @@ if (isProduction) {
       console.error('❌ Cannot read dist folder:', e.message);
     }
     
+    // Handle all non-API routes by serving index.html
     app.use((req, res, next) => {
       if (req.path.startsWith('/api')) return next();
       res.sendFile(path.join(distPath, 'index.html'));
     });
     
-    console.log('✅ Static file serving enabled');
+    console.log('✅ Static file serving enabled with client-side routing');
   } else {
     console.error('❌ dist folder not found at:', distPath);
+    console.log('📁 Current directory contents:', fs.readdirSync(__dirname).join(', '));
   }
 } else {
-  console.log(`\n🔄 Development mode: API only`);
+  console.log(`\n🔄 Development mode: API only, frontend running on Vite dev server`);
 }
 
 // ============ ERROR HANDLING ============
@@ -926,7 +988,24 @@ app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
   console.log(`🚀 SERVER STARTED ON PORT ${PORT}`);
   console.log('='.repeat(60));
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🔗 APP_BASE_URL: ${process.env.APP_BASE_URL}`);
+  console.log(`💰 PayFast: ${process.env.PAYFAST_BASE_URL?.includes('sandbox') ? 'SANDBOX' : 'LIVE'}`);
+  console.log(`🆔 Merchant ID: ${process.env.PAYFAST_MERCHANT_ID}`);
+  console.log(`🌍 Mode: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
   console.log(`🔐 WebAuthn RP ID: ${rpID}`);
   console.log(`🌐 Origin: ${expectedOrigin}`);
+  console.log('='.repeat(60));
+  console.log(`📝 API Endpoints:`);
+  console.log(`   🔐 WEBAUTHN (FINGERPRINT):`);
+  console.log(`   GET  /api/webauthn/has-devices - Check if any devices exist`);
+  console.log(`   POST /api/webauthn/register/begin - Start fingerprint registration`);
+  console.log(`   POST /api/webauthn/register/complete - Complete fingerprint registration`);
+  console.log(`   POST /api/webauthn/login/begin - Start fingerprint login`);
+  console.log(`   POST /api/webauthn/login/complete - Complete fingerprint login`);
+  console.log(`   GET  /api/webauthn/devices/:userId - List user's registered devices`);
+  console.log(`   DELETE /api/webauthn/devices/:deviceId - Remove a device`);
+  console.log(`   GET  /api/webauthn/debug-credentials - Debug stored credentials`);
+  console.log(`   GET  /api/debug/challenges - View active challenges`);
   console.log('='.repeat(60) + '\n');
 });
