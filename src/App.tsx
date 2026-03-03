@@ -8,6 +8,7 @@ import { User } from './lib/supabase';
 import { Sun, Moon, Fingerprint, Smartphone, Key, Loader } from 'lucide-react';
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import { InstallPrompt } from './components/InstallPrompt';
+import { PersistentInstallButton } from './components/PersistentInstallButton';
 
 function AppContent() {
   const { user, login, signInWithGoogle, loading } = useAuth();
@@ -570,6 +571,8 @@ function AppContent() {
         </div>
       </div>
       {!user && <InstallPrompt />}
+      
+      {!user && <PersistentInstallButton />}
     </div>
   );
 }
