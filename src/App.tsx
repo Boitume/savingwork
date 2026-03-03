@@ -7,6 +7,7 @@ import Dashboard from './components/Dashboard';
 import { User } from './lib/supabase';
 import { Sun, Moon, Fingerprint, Smartphone, Key, Loader } from 'lucide-react';
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
+import { InstallPrompt } from './components/InstallPrompt';
 
 function AppContent() {
   const { user, login, signInWithGoogle, loading } = useAuth();
@@ -568,6 +569,7 @@ function AppContent() {
           <p className="mt-1">Pure biometric login - Just like your banking app</p>
         </div>
       </div>
+      {!user && <InstallPrompt />}
     </div>
   );
 }
