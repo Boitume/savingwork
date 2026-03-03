@@ -1,3 +1,43 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+/* Optional: Add a subtle pulse animation for the install button */
+@keyframes gentle-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.animate-gentle-pulse {
+  animation: gentle-pulse 2s ease-in-out infinite;
+}
+
+/* PWA mode styles - when app is installed */
+.pwa-mode {
+  /* Add any specific styles for when the app is running as installed PWA */
+}
+
+/* Hide scrollbar when in PWA mode on mobile for a more native feel */
+.pwa-mode ::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
