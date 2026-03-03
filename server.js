@@ -16,38 +16,28 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ✅ Load environment variables
+// Load environment variables
 const isProduction = process.env.NODE_ENV === 'production';
 
 if (!isProduction) {
   const envPath = path.join(__dirname, '.env');
-  console.log('📁 Looking for .env at:', envPath);
-
+  console.log(' Looking for .env at:', envPath);
   if (fs.existsSync(envPath)) {
-    console.log('✅ Found .env file');
+    console.log(' Found .env file');
     dotenv.config({ path: envPath });
   } else {
-    console.log('⚠️ No .env file found, using environment variables');
+    console.log(' No .env file found, using environment variables');
   }
 } else {
-  console.log('📁 Production mode: Using environment variables from Render dashboard');
+  console.log(' Production mode: Using environment variables from Render dashboard');
 }
 
-// Display loaded variables (without sensitive values)
-console.log('📄 Environment variables loaded:');
+// Display loaded variables
+console.log(' Environment variables loaded:');
 const envVars = [
-  'VITE_SUPABASE_URL',
-  'SUPABASE_SERVICE_KEY',
-  'PAYFAST_MERCHANT_ID',
-  'PAYFAST_MERCHANT_KEY',
-  'PAYFAST_PASSPHRASE',
-  'PAYFAST_BASE_URL',
-  'APP_BASE_URL',
-  'VITE_BACKEND_URL',
-  'CONTACT_EMAIL',
-  'RP_ID',
-  'RP_NAME',
-  'ORIGIN'
+  'VITE_SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'PAYFAST_MERCHANT_ID',
+  'PAYFAST_MERCHANT_KEY', 'PAYFAST_PASSPHRASE', 'PAYFAST_BASE_URL',
+  'APP_BASE_URL', 'VITE_BACKEND_URL', 'CONTACT_EMAIL', 'RP_ID', 'RP_NAME', 'ORIGIN'
 ];
 
 envVars.forEach(key => {
@@ -65,68 +55,54 @@ envVars.forEach(key => {
 const app = express();
 const PORT = process.env.BACKEND_PORT || 4242;
 
-// ✅ Verify required environment variables
+// Verify required environment variables
 const requiredEnvVars = [
-  'VITE_SUPABASE_URL',
-  'SUPABASE_SERVICE_KEY',
-  'PAYFAST_MERCHANT_ID',
-  'PAYFAST_MERCHANT_KEY',
-  'PAYFAST_PASSPHRASE',
-  'PAYFAST_BASE_URL',
-  'APP_BASE_URL'
+  'VITE_SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'PAYFAST_MERCHANT_ID',
+  'PAYFAST_MERCHANT_KEY', 'PAYFAST_PASSPHRASE', 'PAYFAST_BASE_URL', 'APP_BASE_URL'
 ];
 
 const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
 if (missingEnvVars.length > 0) {
-  console.error('❌ Missing required environment variables:');
+  console.error(' Missing required environment variables:');
   missingEnvVars.forEach(varName => console.error(`   - ${varName}`));
   
   if (isProduction) {
     console.error('\n⚠️ Starting server anyway - but some features may not work!');
-    console.error('Please add these variables in your Render dashboard:');
-    console.error('https://dashboard.render.com');
-    // Don't exit, just warn
+    console.error('Please add these variables in your Render dashboard');
   } else {
     console.error('\nPlease create a .env file with these variables');
     process.exit(1);
   }
 }
 
-console.log('✅ All required environment variables found');
-console.log('🔑 PayFast Merchant ID:', process.env.PAYFAST_MERCHANT_ID);
-console.log('🔗 PayFast Base URL:', process.env.PAYFAST_BASE_URL);
-console.log('🔗 App Base URL:', process.env.APP_BASE_URL);
+console.log(' All required environment variables found');
 
-// ✅ Middleware
+// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// ✅ CORS Configuration
+// CORS Configuration - Added localhost:5174
 const allowedOrigins = [
   "http://localhost:5173",
+  "http://localhost:5174", // Added for Vite
   "http://localhost:3000",
   "http://localhost:4242",
   process.env.APP_BASE_URL,
   /\.ngrok-free\.app$/,
-  /\.onrender\.com$/  // Allow Render domains
+  /\.onrender\.com$/
 ].filter(Boolean);
-
-console.log('🌐 Allowed origins:', allowedOrigins.map(o => o.toString()));
 
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl)
     if (!origin) return callback(null, true);
-    
     const allowed = allowedOrigins.some(allowed => 
       typeof allowed === 'string' ? allowed === origin : allowed.test(origin)
     );
-    
     if (allowed) {
       callback(null, true);
     } else {
-      console.log('❌ Blocked origin:', origin);
+      console.log(' Blocked origin:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -136,15 +112,15 @@ app.use(cors({
   optionsSuccessStatus: 200
 }));
 
-// ✅ Initialize Supabase
+// Initialize Supabase
 const supabase = createClient(
   process.env.VITE_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-console.log('✅ Supabase client initialized');
+console.log(' Supabase client initialized');
 
-// ============ WEBAUTHN (FINGERPRINT) CONFIGURATION ============
+// ============ WEBAUTHN CONFIGURATION ============
 const challenges = new Map();
 
 const rpID = process.env.RP_ID || (isProduction ? 'savingwork.onrender.com' : 'localhost');
@@ -153,52 +129,65 @@ const rpName = process.env.RP_NAME || 'Face Recognition App';
 
 console.log(`🔐 WebAuthn configured with RP ID: ${rpID}, Origin: ${expectedOrigin}`);
 
-// ============ PURE BIOMETRIC WEBAUTHN ENDPOINTS ============
+// Helper function to convert standard base64 to base64url
+function toBase64url(base64String) {
+  return base64String
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
 
-// ✅ CHECK IF ANY DEVICES EXIST
+// Helper function to convert base64url to standard base64
+function fromBase64url(base64urlString) {
+  let base64 = base64urlString
+    .replace(/-/g, '+')
+    .replace(/_/g, '/');
+  
+  // Add padding back
+  const padding = 4 - (base64.length % 4);
+  if (padding < 4) {
+    base64 += '='.repeat(padding);
+  }
+  return base64;
+}
+
+// ============ WEBAUTHN ENDPOINTS ============
+
+// Check if any devices exist
 app.get('/api/webauthn/has-devices', async (req, res) => {
   try {
-    console.log('🔍 Checking for registered devices...');
     const { count, error } = await supabase
       .from('user_credentials')
       .select('*', { count: 'exact', head: true });
 
     if (error) {
-      console.error('❌ Failed to check devices:', error);
+      console.error(' Failed to check devices:', error);
       return res.status(500).json({ error: 'Failed to check devices' });
     }
 
-    console.log(`📊 Device count: ${count}`);
     res.json({ hasDevices: count > 0 });
   } catch (error) {
-    console.error('❌ Error checking devices:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ REGISTRATION BEGIN - FOR NEW USERS
+// Registration Begin
 app.post('/api/webauthn/register/begin', async (req, res) => {
   try {
-    console.log('🔐 Starting WebAuthn registration for new user');
-
-    // Generate a temporary user ID
     const tempUserId = `temp_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
     const tempUsername = `user_${Date.now().toString().slice(-6)}`;
 
-    // Convert string to Buffer/Uint8Array for v10+ compatibility
-    const userIDBuffer = Buffer.from(tempUserId, 'utf8');
-    
     const options = await generateRegistrationOptions({
       rpName,
       rpID,
-      userID: userIDBuffer,
+      userID: Buffer.from(tempUserId, 'utf8'),
       userName: tempUsername,
       userDisplayName: 'User',
       attestationType: 'none',
       authenticatorSelection: {
         authenticatorAttachment: 'platform',
         userVerification: 'required',
-        residentKey: 'preferred', // Changed from 'required' for better mobile compatibility
+        residentKey: 'preferred',
       },
       supportedAlgorithmIDs: [-7, -257],
     });
@@ -211,53 +200,26 @@ app.post('/api/webauthn/register/begin', async (req, res) => {
       timestamp: Date.now()
     });
 
-    console.log(`✅ Registration options generated with challenge ID: ${challengeId}`);
-    res.json({ 
-      ...options, 
-      challengeId 
-    });
+    res.json({ ...options, challengeId });
   } catch (error) {
-    console.error('❌ WebAuthn registration begin error:', error);
+    console.error(' Registration begin error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ COMPLETE REGISTRATION - FIXED WITH BETTER PUBLIC KEY EXTRACTION
+// Registration Complete - Fixed to store as base64url
 app.post('/api/webauthn/register/complete', async (req, res) => {
   try {
     const { credential, challengeId } = req.body;
     
-    console.log('\n🔐 REGISTRATION COMPLETE - START');
-    console.log('Challenge ID:', challengeId);
-    console.log('Credential received:', credential ? 'Yes' : 'No');
-    
     if (!credential || !challengeId) {
-      console.error('❌ Missing credential or challengeId');
       return res.status(400).json({ error: 'Missing credential or challengeId' });
     }
 
-    // Check if credential has required fields
-    if (!credential.id) {
-      console.error('❌ Credential missing id field');
-      return res.status(400).json({ error: 'Invalid credential: missing id' });
-    }
-
-    if (!credential.response) {
-      console.error('❌ Credential missing response field');
-      return res.status(400).json({ error: 'Invalid credential: missing response' });
-    }
-
-    console.log('Credential ID received:', credential.id.substring(0, 20) + '...');
-
     const storedData = challenges.get(challengeId);
     if (!storedData) {
-      console.error('❌ No registration session found for challenge ID:', challengeId);
-      console.log('Available challenges:', Array.from(challenges.keys()));
       return res.status(400).json({ error: 'No registration session found' });
     }
-
-    console.log('Stored data found for user:', storedData.tempUsername);
-    console.log('Expected challenge:', storedData.challenge.substring(0, 20) + '...');
 
     const verification = await verifyRegistrationResponse({
       response: credential,
@@ -267,226 +229,78 @@ app.post('/api/webauthn/register/complete', async (req, res) => {
       requireUserVerification: true,
     });
 
-    console.log('Verification result:', { 
-      verified: verification.verified, 
-      hasRegistrationInfo: !!verification.registrationInfo 
-    });
+    if (!verification.verified || !verification.registrationInfo) {
+      return res.status(400).json({ verified: false });
+    }
 
-    const { verified, registrationInfo } = verification;
+    const { registrationInfo } = verification;
 
-    if (verified) {
-      console.log('✅ Registration verified successfully');
-      
-      // === IMPROVED CREDENTIAL DATA EXTRACTION ===
-      let rawCredentialID = null;
-      let rawPublicKey = null;
-      let counter = 0;
-      let deviceType = 'unknown';
-      let backedUp = false;
-      
-      // Log what we have in registrationInfo
-      if (registrationInfo) {
-        console.log('📦 registrationInfo keys:', Object.keys(registrationInfo));
-      }
-      
-      // Method 1: Standard SimpleWebAuthn v10+ format
-      if (registrationInfo) {
-        console.log('📦 Trying registrationInfo format');
-        
-        // Try to get credentialID
-        if (registrationInfo.credentialID) {
-          rawCredentialID = registrationInfo.credentialID;
-          console.log('✅ Found credentialID in registrationInfo');
-        }
-        
-        // Try multiple possible locations for public key
-        if (registrationInfo.credentialPublicKey) {
-          rawPublicKey = registrationInfo.credentialPublicKey;
-          console.log('✅ Found credentialPublicKey in registrationInfo');
-        } else if (registrationInfo.publicKey) {
-          rawPublicKey = registrationInfo.publicKey;
-          console.log('✅ Found publicKey in registrationInfo');
-        } else if (registrationInfo.credential && registrationInfo.credential.publicKey) {
-          rawPublicKey = registrationInfo.credential.publicKey;
-          console.log('✅ Found publicKey in registrationInfo.credential');
-        }
-        
-        counter = registrationInfo.counter || 0;
-        deviceType = registrationInfo.credentialDeviceType || 'unknown';
-        backedUp = registrationInfo.credentialBackedUp || false;
-      }
-      
-      // Method 2: Fallback to credential.id for credentialID
-      if (!rawCredentialID && credential.id) {
-        console.log('📦 Falling back to credential.id for credentialID');
-        try {
-          rawCredentialID = Buffer.from(credential.id, 'base64');
-          console.log('✅ Using credential.id as fallback for credentialID');
-        } catch (e) {
-          console.error('❌ Failed to convert credential.id:', e);
-        }
-      }
-      
-      // Method 3: Try to extract public key from credential.response
-      if (!rawPublicKey && credential.response) {
-        console.log('📦 Trying to extract public key from credential.response');
-        
-        // Check for publicKey in response
-        if (credential.response.publicKey) {
-          try {
-            rawPublicKey = Buffer.from(credential.response.publicKey);
-            console.log('✅ Found publicKey in credential.response');
-          } catch (e) {
-            console.error('❌ Failed to convert response.publicKey:', e);
-          }
-        }
-        
-        // Check for attestationObject (contains public key)
-        if (!rawPublicKey && credential.response.attestationObject) {
-          console.log('📦 attestationObject present - would need parsing in production');
-          // In production, you'd need to parse the attestationObject with a library like cbor
-          // This is a simplified fallback for development
-          if (!isProduction) {
-            console.warn('⚠️ DEVELOPMENT: Using credential.id as fallback for public key');
-            // This is NOT secure for production - only for testing
-            rawPublicKey = Buffer.from(credential.id, 'base64');
-          }
-        }
-      }
-      
-      // Method 4: Last resort for development
-      if (!rawCredentialID && !isProduction) {
-        console.warn('⚠️ DEVELOPMENT: Generating temporary credential ID');
-        rawCredentialID = crypto.randomBytes(32);
-      }
-      
-      if (!rawPublicKey && !isProduction) {
-        console.warn('⚠️ DEVELOPMENT: Generating temporary public key');
-        rawPublicKey = crypto.randomBytes(65);
-      }
+    // Create user
+    const { data: newUser, error: userError } = await supabase
+      .from('users')
+      .insert({
+        username: storedData.tempUsername,
+        email: null,
+        balance: 0,
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
 
-      // Validate we have the required data
-      if (!rawCredentialID) {
-        console.error('❌ Could not extract credential ID');
-        return res.status(500).json({ 
-          error: 'Failed to process credential',
-          details: 'Missing credential ID'
-        });
-      }
+    if (userError) {
+      console.error(' Failed to create user:', userError);
+      return res.status(500).json({ error: 'Failed to create user' });
+    }
 
-      if (!rawPublicKey) {
-        console.error('❌ Could not extract public key');
-        return res.status(500).json({ 
-          error: 'Failed to process credential',
-          details: 'Missing public key'
-        });
-      }
+    // Convert credential ID to base64url for storage
+    const credentialIdBase64 = Buffer.from(registrationInfo.credentialID).toString('base64');
+    const credentialIdBase64url = toBase64url(credentialIdBase64);
 
-      console.log('Raw credentialID type:', typeof rawCredentialID);
-      console.log('Raw credentialID is Buffer?', Buffer.isBuffer(rawCredentialID));
-      console.log('Raw publicKey type:', typeof rawPublicKey);
-      console.log('Raw publicKey is Buffer?', Buffer.isBuffer(rawPublicKey));
-      
-      // Convert to base64 for storage
-      let credentialIdBase64, publicKeyBase64;
-      try {
-        credentialIdBase64 = Buffer.isBuffer(rawCredentialID) 
-          ? rawCredentialID.toString('base64')
-          : Buffer.from(rawCredentialID).toString('base64');
-        
-        publicKeyBase64 = Buffer.isBuffer(rawPublicKey)
-          ? rawPublicKey.toString('base64')
-          : Buffer.from(rawPublicKey).toString('base64');
-        
-        console.log('✅ CredentialID converted to base64, length:', credentialIdBase64.length);
-        console.log('✅ PublicKey converted to base64, length:', publicKeyBase64.length);
-      } catch (e) {
-        console.error('❌ Buffer conversion error:', e);
-        return res.status(500).json({ error: 'Failed to convert credential data' });
-      }
-
-      // Create new user
-      console.log('👤 Creating new user:', storedData.tempUsername);
-      const { data: newUser, error: userError } = await supabase
-        .from('users')
-        .insert({
-          username: storedData.tempUsername,
-          email: null,
-          balance: 0,
-          created_at: new Date().toISOString()
-        })
-        .select()
-        .single();
-
-      if (userError) {
-        console.error('❌ Failed to create user:', userError);
-        return res.status(500).json({ error: 'Failed to create user' });
-      }
-
-      console.log('✅ User created:', newUser.id);
-
-      // Store credential - using correct column names
-      const credentialData = {
+    // Store credential in base64url format
+    const { error: dbError } = await supabase
+      .from('user_credentials')
+      .insert({
         user_id: newUser.id,
-        credential_id: credentialIdBase64,
-        public_key: publicKeyBase64,
-        counter: counter,
-        device_type: deviceType,
-        backed_up: backedUp,
+        credential_id: credentialIdBase64url, // Store as base64url
+        public_key: registrationInfo.credentialPublicKey.toString('base64'),
+        counter: registrationInfo.counter || 0,
+        device_type: registrationInfo.credentialDeviceType || 'unknown',
+        backed_up: registrationInfo.credentialBackedUp || false,
         transports: credential.response?.transports || ['internal'],
         created_at: new Date().toISOString()
-      };
-
-      console.log('📦 Storing credential with data:', {
-        ...credentialData,
-        credential_id: credentialData.credential_id.substring(0, 20) + '...',
-        public_key: '[HIDDEN]'
       });
 
-      const { error: dbError } = await supabase
-        .from('user_credentials')
-        .insert(credentialData);
-
-      if (dbError) {
-        console.error('❌ Failed to store credential:', dbError);
-        return res.status(500).json({ 
-          error: 'Failed to store credential',
-          details: dbError.message,
-          code: dbError.code
-        });
-      }
-
-      console.log('✅ Credential stored successfully');
-      
-      challenges.delete(challengeId);
-      console.log('🧹 Challenge deleted');
-      
-      res.json({ 
-        verified: true,
-        user: newUser
-      });
-    } else {
-      console.log('❌ WebAuthn registration verification failed');
-      res.status(400).json({ verified: false, error: 'Verification failed' });
+    if (dbError) {
+      console.error(' Failed to store credential:', dbError);
+      return res.status(500).json({ error: 'Failed to store credential' });
     }
+
+    challenges.delete(challengeId);
+    
+    res.json({ 
+      verified: true,
+      user: newUser
+    });
   } catch (error) {
-    console.error('❌ WebAuthn registration complete error:', error);
-    console.error('Error stack:', error.stack);
+    console.error(' Registration complete error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ LOGIN BEGIN - PURE BIOMETRIC - FIXED
+// Login Begin - FIXED for base64url
 app.post('/api/webauthn/login/begin', async (req, res) => {
   try {
-    console.log('🔐 Starting WebAuthn authentication');
-
-    const { data: credentials, error: dbError } = await supabase
-      .from('user_credentials')
-      .select('credential_id, transports');
+    const { userId } = req.body || {};
+    
+    let query = supabase.from('user_credentials').select('credential_id, transports, user_id');
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+    
+    const { data: credentials, error: dbError } = await query;
 
     if (dbError) {
-      console.error('❌ Failed to fetch credentials:', dbError);
+      console.error(' Failed to fetch credentials:', dbError);
       return res.status(500).json({ error: 'Failed to fetch credentials' });
     }
 
@@ -494,60 +308,51 @@ app.post('/api/webauthn/login/begin', async (req, res) => {
       return res.status(404).json({ error: 'No registered devices found' });
     }
 
-    console.log(`📊 Found ${credentials.length} credentials`);
-
-    // Format credentials correctly for SimpleWebAuthn
-    // They expect base64url strings, not Buffer objects
+    // Format credentials - ensure they are in base64url format
     const allowCredentials = credentials.map(cred => {
-      // Ensure credential_id is treated as a base64url string
-      // Remove any padding if present
-      const cleanCredentialId = cred.credential_id.replace(/=/g, '');
+      // If the stored ID contains / or +, it's standard base64, convert to base64url
+      let credentialId = cred.credential_id;
+      
+      // Ensure it's in base64url format (no padding, - instead of +, _ instead of /)
+      credentialId = credentialId
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
       
       return {
-        id: cleanCredentialId, // Pass as string, not Buffer
+        id: credentialId,
         type: 'public-key',
-        transports: cred.transports || ['internal', 'hybrid', 'usb', 'nfc', 'ble'],
+        transports: cred.transports || ['internal', 'hybrid'],
       };
     });
 
-    console.log(`✅ Formatted ${allowCredentials.length} credentials for WebAuthn`);
+    console.log(`✅ Formatted ${allowCredentials.length} credentials in base64url`);
 
     const options = await generateAuthenticationOptions({
       rpID,
       allowCredentials,
       userVerification: 'required',
-      timeout: 60000, // 60 seconds timeout for mobile devices
+      timeout: 60000,
     });
 
     const challengeId = crypto.randomBytes(16).toString('hex');
     challenges.set(challengeId, {
       challenge: options.challenge,
+      userId: userId || null,
       timestamp: Date.now()
     });
 
-    console.log(`✅ Authentication options generated: ${challengeId}`);
-    console.log(`📤 Sending ${allowCredentials.length} credentials to client`);
-    
     res.json({ ...options, challengeId });
   } catch (error) {
-    console.error('❌ Login begin error:', error);
-    console.error('Error details:', {
-      name: error.name,
-      message: error.message,
-      stack: error.stack
-    });
+    console.error(' Login begin error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ LOGIN COMPLETE
+// Login Complete - FIXED with proper base64url handling
 app.post('/api/webauthn/login/complete', async (req, res) => {
   try {
     const { credential, challengeId } = req.body;
-    
-    console.log('\n🔐 LOGIN COMPLETE - START');
-    console.log('Challenge ID:', challengeId);
-    console.log('Credential ID:', credential?.id?.substring(0, 20) + '...');
     
     if (!credential || !challengeId) {
       return res.status(400).json({ error: 'Missing data' });
@@ -555,36 +360,59 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
 
     const storedData = challenges.get(challengeId);
     if (!storedData) {
-      console.error('❌ No session found for challenge ID:', challengeId);
       return res.status(400).json({ error: 'No session found' });
     }
 
-    console.log('✅ Session found, looking up credential in database');
+    // The credential.id from client is in base64url format
+    const clientCredentialId = credential.id;
+    
+    console.log('Looking for credential:', clientCredentialId.substring(0, 30) + '...');
 
-    const { data: storedCredential, error: dbError } = await supabase
+    // Try multiple strategies to find the credential
+    let storedCredential = null;
+    
+    // Strategy 1: Direct match with stored base64url
+    const { data: exactMatch } = await supabase
       .from('user_credentials')
       .select('*, users(*)')
-      .eq('credential_id', credential.id)
-      .single();
+      .eq('credential_id', clientCredentialId)
+      .maybeSingle();
+    
+    if (exactMatch) {
+      storedCredential = exactMatch;
+      console.log('✅ Credential found with exact match (base64url)');
+    } else {
+      // Strategy 2: Try converting client ID to standard base64 (some older records might be stored this way)
+      const standardBase64 = fromBase64url(clientCredentialId);
+      
+      const { data: convertedMatch } = await supabase
+        .from('user_credentials')
+        .select('*, users(*)')
+        .eq('credential_id', standardBase64)
+        .maybeSingle();
+      
+      if (convertedMatch) {
+        storedCredential = convertedMatch;
+        console.log('✅ Credential found after conversion to standard base64');
+      }
+    }
 
-    if (dbError || !storedCredential) {
-      console.error('❌ Credential not found:', dbError);
+    if (!storedCredential) {
+      console.error('❌ Credential not found');
       return res.status(404).json({ error: 'Credential not found' });
     }
 
     console.log('✅ Credential found for user:', storedCredential.users.id);
 
-    // Safely convert publicKey from base64 to Buffer
+    // Convert public key
     let publicKeyBuffer;
     try {
       publicKeyBuffer = Buffer.from(storedCredential.public_key, 'base64');
-      console.log('✅ PublicKey converted successfully');
-    } catch (bufferError) {
-      console.error('❌ Failed to convert publicKey from base64:', bufferError);
+    } catch (e) {
+      console.error('❌ Failed to convert public key:', e);
       return res.status(500).json({ error: 'Failed to process public key' });
     }
 
-    console.log('🔐 Verifying authentication response...');
     const verification = await verifyAuthenticationResponse({
       response: credential,
       expectedChallenge: storedData.challenge,
@@ -599,19 +427,15 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
       requireUserVerification: true,
     });
 
-    console.log('✅ Verification result:', { verified: verification.verified });
-
     if (verification.verified) {
-      // Update counter
       await supabase
         .from('user_credentials')
         .update({ 
           counter: verification.authenticationInfo.newCounter,
           last_used: new Date().toISOString()
         })
-        .eq('credential_id', credential.id);
+        .eq('id', storedCredential.id);
 
-      console.log(`✅ Login successful for user: ${storedCredential.users.id}`);
       challenges.delete(challengeId);
       
       res.json({ 
@@ -619,25 +443,18 @@ app.post('/api/webauthn/login/complete', async (req, res) => {
         user: storedCredential.users
       });
     } else {
-      console.log('❌ Login verification failed');
       res.status(400).json({ verified: false });
     }
   } catch (error) {
-    console.error('❌ Login complete error:', error);
-    console.error('Error details:', {
-      name: error.name,
-      message: error.message,
-      stack: error.stack
-    });
+    console.error(' Login complete error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ GET USER DEVICES
+// Get user devices
 app.get('/api/webauthn/devices/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    
     const { data: devices, error } = await supabase
       .from('user_credentials')
       .select('id, device_type, backed_up, created_at, last_used, transports')
@@ -651,7 +468,7 @@ app.get('/api/webauthn/devices/:userId', async (req, res) => {
   }
 });
 
-// ✅ REMOVE DEVICE
+// Remove device
 app.delete('/api/webauthn/devices/:deviceId', async (req, res) => {
   try {
     const { deviceId } = req.params;
@@ -670,7 +487,34 @@ app.delete('/api/webauthn/devices/:deviceId', async (req, res) => {
   }
 });
 
-// ✅ DEBUG CHALLENGES
+// Debug endpoints
+app.get('/api/webauthn/debug-credentials', async (req, res) => {
+  try {
+    const { data: credentials, error } = await supabase
+      .from('user_credentials')
+      .select('credential_id, transports, user_id, device_type, counter');
+
+    if (error) throw error;
+
+    const formatted = credentials.map(cred => ({
+      credential_id_preview: cred.credential_id.substring(0, 30) + '...',
+      credential_id_length: cred.credential_id.length,
+      has_padding: cred.credential_id.includes('='),
+      has_slash: cred.credential_id.includes('/'),
+      has_plus: cred.credential_id.includes('+'),
+      is_base64url: !cred.credential_id.includes('/') && !cred.credential_id.includes('+'),
+      transports: cred.transports,
+      user_id: cred.user_id,
+      device_type: cred.device_type,
+      counter: cred.counter
+    }));
+
+    res.json({ count: credentials.length, credentials: formatted });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/debug/challenges', (req, res) => {
   res.json({
     count: challenges.size,
@@ -679,34 +523,37 @@ app.get('/api/debug/challenges', (req, res) => {
   });
 });
 
-// ✅ DEBUG CREDENTIALS - New endpoint to check stored credentials
-app.get('/api/webauthn/debug-credentials', async (req, res) => {
+app.get('/api/webauthn/diagnose', async (req, res) => {
   try {
-    const { data: credentials, error } = await supabase
+    const { count } = await supabase
       .from('user_credentials')
-      .select('credential_id, transports, user_id, device_type');
+      .select('*', { count: 'exact', head: true });
 
-    if (error) throw error;
-
-    const formatted = credentials.map(cred => ({
-      credential_id_preview: cred.credential_id.substring(0, 20) + '...',
-      credential_id_length: cred.credential_id.length,
-      clean_id: cred.credential_id.replace(/=/g, ''),
-      transports: cred.transports,
-      user_id: cred.user_id,
-      device_type: cred.device_type
-    }));
+    const { data: sample } = await supabase
+      .from('user_credentials')
+      .select('credential_id, user_id')
+      .limit(1);
 
     res.json({
-      count: credentials.length,
-      credentials: formatted
+      server: { time: new Date().toISOString(), rpID, origin: expectedOrigin, isProduction },
+      database: {
+        credentials_count: count || 0,
+        sample_credential: sample?.[0] ? {
+          id_preview: sample[0].credential_id.substring(0, 30) + '...',
+          length: sample[0].credential_id.length,
+          has_padding: sample[0].credential_id.includes('='),
+          has_slash: sample[0].credential_id.includes('/'),
+          has_plus: sample[0].credential_id.includes('+')
+        } : null
+      },
+      challenges: { active_count: challenges.size }
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ HEALTH CHECK
+// Health check
 app.get("/api/health", (req, res) => {
   res.json({ 
     status: "OK",
@@ -720,13 +567,11 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// ✅ PAYFAST SIGNATURE GENERATOR
+// ============ PAYFAST ============
 function generatePayFastSignature(params, passphrase) {
   const orderedParams = {};
   Object.keys(params).forEach(key => {
-    if (params[key] !== undefined && params[key] !== null && params[key] !== '') {
-      orderedParams[key] = params[key];
-    }
+    if (params[key]) orderedParams[key] = params[key];
   });
   
   const paramPairs = [];
@@ -737,12 +582,10 @@ function generatePayFastSignature(params, passphrase) {
   }
   
   const paramString = paramPairs.join('&');
-  const cleanPassphrase = String(passphrase).trim();
-  const stringToHash = paramString + '&passphrase=' + cleanPassphrase;
+  const stringToHash = paramString + '&passphrase=' + String(passphrase).trim();
   return crypto.createHash('md5').update(stringToHash).digest('hex');
 }
 
-// ✅ CREATE PAYMENT
 app.post("/api/payfast/create-payment", async (req, res) => {
   try {
     const { amount, userId, paymentMethod, voucherCode } = req.body;
@@ -753,9 +596,7 @@ app.post("/api/payfast/create-payment", async (req, res) => {
 
     // Voucher payment
     if (paymentMethod === 'voucher') {
-      if (!voucherCode) {
-        return res.status(400).json({ error: "Voucher code required" });
-      }
+      if (!voucherCode) return res.status(400).json({ error: "Voucher code required" });
 
       const { data: voucher } = await supabase
         .from('vouchers')
@@ -774,8 +615,6 @@ app.post("/api/payfast/create-payment", async (req, res) => {
         .eq('id', userId)
         .single();
 
-      const newBalance = (user.balance || 0) + amount;
-
       await supabase.rpc('process_voucher_payment', {
         p_user_id: userId,
         p_amount: amount,
@@ -787,7 +626,7 @@ app.post("/api/payfast/create-payment", async (req, res) => {
         success: true,
         method: 'voucher',
         amount,
-        new_balance: newBalance
+        new_balance: (user.balance || 0) + amount
       });
     }
 
@@ -813,7 +652,6 @@ app.post("/api/payfast/create-payment", async (req, res) => {
     
     const payfastUrl = `${process.env.PAYFAST_BASE_URL}?${queryString}`;
 
-    // Store payment record
     await supabase.from("payments").insert([{
       payment_id: paymentId,
       user_id: userId,
@@ -824,16 +662,13 @@ app.post("/api/payfast/create-payment", async (req, res) => {
 
     res.json({ success: true, url: payfastUrl, payment_id: paymentId });
   } catch (error) {
-    console.error("❌ Payment error:", error);
+    console.error(" Payment error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ PAYFAST WEBHOOK
 app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) => {
   try {
-    console.log("\n📨 WEBHOOK RECEIVED");
-    
     const params = Object.fromEntries(
       req.body.split("&").map(pair => {
         const [key, value] = pair.split("=");
@@ -844,13 +679,9 @@ app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) 
     const receivedSignature = params.signature;
     delete params.signature;
     
-    const expectedSignature = generatePayFastSignature(
-      params, 
-      process.env.PAYFAST_PASSPHRASE
-    );
+    const expectedSignature = generatePayFastSignature(params, process.env.PAYFAST_PASSPHRASE);
 
     if (receivedSignature !== expectedSignature) {
-      console.error("❌ Invalid signature");
       return res.status(400).send("Invalid signature");
     }
 
@@ -859,30 +690,22 @@ app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) 
       const amount = parseFloat(params.amount_gross);
       const paymentId = params.m_payment_id;
 
-      // Update user balance
       const { data: user } = await supabase
         .from('users')
         .select('balance')
         .eq('id', userId)
         .single();
 
-      const newBalance = (user.balance || 0) + amount;
-      
       await supabase
         .from('users')
-        .update({ balance: newBalance })
+        .update({ balance: (user.balance || 0) + amount })
         .eq('id', userId);
 
-      // Update payment status
       await supabase
         .from("payments")
-        .update({ 
-          status: "completed",
-          completed_at: new Date().toISOString()
-        })
+        .update({ status: "completed", completed_at: new Date().toISOString() })
         .eq("payment_id", paymentId);
 
-      // Record transaction
       await supabase.from("transactions").insert([{
         user_id: userId,
         amount: amount,
@@ -892,48 +715,12 @@ app.post("/api/payfast/notify", express.text({ type: "*/*" }), async (req, res) 
         payment_id: paymentId,
         created_at: new Date().toISOString()
       }]);
-
-      console.log(`✅ Payment completed: R${amount} for user ${userId}`);
     }
 
     res.status(200).send("OK");
   } catch (error) {
-    console.error("❌ Webhook error:", error);
+    console.error(" Webhook error:", error);
     res.status(500).send("Error");
-  }
-});
-
-// ✅ DIAGNOSTIC ENDPOINT
-app.get("/api/diagnostic", async (req, res) => {
-  try {
-    const results = {
-      server: {
-        time: new Date().toISOString(),
-        node_version: process.version,
-        environment: isProduction ? 'production' : 'development'
-      },
-      supabase: { connected: false, tables: {} },
-      webauthn: { rpID, origin: expectedOrigin }
-    };
-
-    // Test connections
-    const { error: usersError } = await supabase
-      .from('users')
-      .select('count', { count: 'exact', head: true });
-
-    results.supabase.connected = !usersError;
-    results.supabase.tables.users = usersError ? '❌' : '✅';
-
-    // Test user_credentials table
-    const { error: credError } = await supabase
-      .from('user_credentials')
-      .select('count', { count: 'exact', head: true });
-    
-    results.supabase.tables.user_credentials = credError ? '❌' : '✅';
-
-    res.json({ success: true, ...results });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
 });
 
@@ -941,37 +728,23 @@ app.get("/api/diagnostic", async (req, res) => {
 const distPath = path.join(__dirname, 'dist');
 
 if (isProduction) {
-  console.log(`\n📦 Production mode: Serving static files from ${distPath}`);
+  console.log(`\n📦 Serving static files from ${distPath}`);
   
   if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
     
-    try {
-      const files = fs.readdirSync(distPath);
-      console.log('📄 Files in dist:', files.join(', '));
-      if (files.includes('index.html')) {
-        console.log('✅ index.html found in dist');
-      }
-    } catch (e) {
-      console.error('❌ Cannot read dist folder:', e.message);
-    }
-    
-    // Handle all non-API routes by serving index.html
     app.use((req, res, next) => {
       if (req.path.startsWith('/api')) return next();
       res.sendFile(path.join(distPath, 'index.html'));
     });
     
-    console.log('✅ Static file serving enabled with client-side routing');
+    console.log(' Static file serving enabled');
   } else {
-    console.error('❌ dist folder not found at:', distPath);
-    console.log('📁 Current directory contents:', fs.readdirSync(__dirname).join(', '));
+    console.error(' dist folder not found at:', distPath);
   }
-} else {
-  console.log(`\n🔄 Development mode: API only, frontend running on Vite dev server`);
 }
 
-// ============ ERROR HANDLING ============
+// Error handling
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     res.status(404).json({ error: "API endpoint not found" });
@@ -979,33 +752,16 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error("❌ Unhandled error:", err);
+  console.error(" Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 });
 
-// ============ START SERVER ============
+// Start server
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
   console.log(`🚀 SERVER STARTED ON PORT ${PORT}`);
   console.log('='.repeat(60));
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`🔗 APP_BASE_URL: ${process.env.APP_BASE_URL}`);
-  console.log(`💰 PayFast: ${process.env.PAYFAST_BASE_URL?.includes('sandbox') ? 'SANDBOX' : 'LIVE'}`);
-  console.log(`🆔 Merchant ID: ${process.env.PAYFAST_MERCHANT_ID}`);
-  console.log(`🌍 Mode: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
   console.log(`🔐 WebAuthn RP ID: ${rpID}`);
   console.log(`🌐 Origin: ${expectedOrigin}`);
-  console.log('='.repeat(60));
-  console.log(`📝 API Endpoints:`);
-  console.log(`   🔐 WEBAUTHN (FINGERPRINT):`);
-  console.log(`   GET  /api/webauthn/has-devices - Check if any devices exist`);
-  console.log(`   POST /api/webauthn/register/begin - Start fingerprint registration`);
-  console.log(`   POST /api/webauthn/register/complete - Complete fingerprint registration`);
-  console.log(`   POST /api/webauthn/login/begin - Start fingerprint login`);
-  console.log(`   POST /api/webauthn/login/complete - Complete fingerprint login`);
-  console.log(`   GET  /api/webauthn/devices/:userId - List user's registered devices`);
-  console.log(`   DELETE /api/webauthn/devices/:deviceId - Remove a device`);
-  console.log(`   GET  /api/webauthn/debug-credentials - Debug stored credentials`);
-  console.log(`   GET  /api/debug/challenges - View active challenges`);
   console.log('='.repeat(60) + '\n');
 });

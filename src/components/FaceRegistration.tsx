@@ -8,7 +8,7 @@ interface FaceRegistrationProps {
   onSuccess: () => void;
 }
 
-const DUPLICATE_THRESHOLD = 0.6; // 60% match = duplicate
+const DUPLICATE_THRESHOLD = 0.6; 
 
 export default function FaceRegistration({ onSuccess }: FaceRegistrationProps) {
   const { theme } = useTheme();

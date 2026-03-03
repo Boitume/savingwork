@@ -63,10 +63,12 @@ function AppContent() {
       
       // Step 1: Check if any devices are registered in the system
       const checkResponse = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/has-devices`);
+      if (!checkResponse.ok) {
+        throw new Error('Failed to check devices');
+      }
       const { hasDevices } = await checkResponse.json();
       
       if (!hasDevices) {
-        // No devices registered yet - prompt to register (like first-time banking app setup)
         setFingerprintStatus('No devices found. Setting up first-time registration...');
         setTimeout(() => {
           setShowFingerprintModal(true);
@@ -76,22 +78,35 @@ function AppContent() {
         return;
       }
       
-      // Step 2: Get authentication options from server (no userId needed!)
+      // Step 2: Get authentication options from server
       setFingerprintStatus('Preparing authentication...');
+      console.log('📡 Calling login begin endpoint...');
+      
       const optsResponse = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/login/begin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}) // Empty body - pure biometric
+        body: JSON.stringify({})
       });
       
-      const optsData = await optsResponse.json();
+      console.log('📡 Response status:', optsResponse.status);
       
-      if (optsData.error || !optsData) {
-        setFingerprintStatus('Authentication failed');
-        setTimeout(() => setFingerprintStatus(''), 2000);
+      if (!optsResponse.ok) {
+        const errorData = await optsResponse.json();
+        console.error('❌ Login begin failed:', errorData);
+        
+        if (optsResponse.status === 404) {
+          setFingerprintStatus('No fingerprint registered. Please register first.');
+        } else {
+          setFingerprintStatus(`Error: ${errorData.error || 'Unknown error'}`);
+        }
+        
+        setTimeout(() => setFingerprintStatus(''), 3000);
         setFingerprintLoading(false);
         return;
       }
+      
+      const optsData = await optsResponse.json();
+      console.log('✅ Login options received');
       
       // Step 3: Start browser authentication (fingerprint scan)
       setFingerprintStatus('Scan your fingerprint...');
@@ -108,6 +123,11 @@ function AppContent() {
         })
       });
       
+      if (!verifResp.ok) {
+        const errorData = await verifResp.json();
+        throw new Error(errorData.error || 'Verification failed');
+      }
+      
       const verifData = await verifResp.json();
       
       if (verifData.verified && verifData.user) {
@@ -115,11 +135,11 @@ function AppContent() {
         console.log('✅ Fingerprint login successful');
         login(verifData.user);
       } else {
-        setFingerprintStatus('Authentication failed');
-        setTimeout(() => setFingerprintStatus(''), 2000);
+        throw new Error('Authentication failed');
       }
     } catch (error: any) {
-      console.error('Fingerprint login error:', error);
+      console.error('❌ Fingerprint login error:', error);
+      
       if (error.name === 'NotAllowedError') {
         setFingerprintStatus('Authentication cancelled');
       } else if (error.name === 'NotFoundError') {
@@ -128,36 +148,35 @@ function AppContent() {
           setShowFingerprintModal(true);
         }, 1500);
       } else {
-        setFingerprintStatus('Authentication failed');
+        setFingerprintStatus(`Error: ${error.message || 'Authentication failed'}`);
       }
-      setTimeout(() => setFingerprintStatus(''), 2000);
+      
+      setTimeout(() => setFingerprintStatus(''), 3000);
     } finally {
       setFingerprintLoading(false);
     }
   };
 
-  // Handle fingerprint registration for new users (like first-time banking app setup)
+  // Handle fingerprint registration for new users
   const handleRegisterFingerprint = async () => {
     try {
       setFingerprintLoading(true);
       setFingerprintStatus('Preparing registration...');
       setShowFingerprintModal(false);
       
-      // Step 1: Get registration options from server (no data needed!)
+      // Step 1: Get registration options from server
       const optsResponse = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/webauthn/register/begin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}) // Empty body - server generates temp user
+        body: JSON.stringify({})
       });
       
-      const optsData = await optsResponse.json();
-      
-      if (optsData.error) {
-        console.error('Registration options error:', optsData.error);
-        setFingerprintStatus('Registration failed');
-        setTimeout(() => setFingerprintStatus(''), 2000);
-        return;
+      if (!optsResponse.ok) {
+        const errorData = await optsResponse.json();
+        throw new Error(errorData.error || 'Failed to start registration');
       }
+      
+      const optsData = await optsResponse.json();
       
       // Step 2: Start browser registration (fingerprint scan)
       setFingerprintStatus('Scan your fingerprint to register...');
@@ -174,28 +193,33 @@ function AppContent() {
         })
       });
       
+      if (!verifResp.ok) {
+        const errorData = await verifResp.json();
+        throw new Error(errorData.error || 'Registration failed');
+      }
+      
       const verifData = await verifResp.json();
       
       if (verifData.verified && verifData.user) {
         setFingerprintStatus('Registration successful! Logging you in...');
         console.log('✅ Fingerprint registered successfully');
         
-        // Auto-login after registration (like banking apps)
         setTimeout(() => {
           login(verifData.user);
         }, 1000);
       } else {
-        setFingerprintStatus('Registration failed');
-        setTimeout(() => setFingerprintStatus(''), 2000);
+        throw new Error('Registration verification failed');
       }
     } catch (error: any) {
-      console.error('Fingerprint registration error:', error);
+      console.error('❌ Fingerprint registration error:', error);
+      
       if (error.name === 'NotAllowedError') {
         setFingerprintStatus('Registration cancelled');
       } else {
-        setFingerprintStatus('Registration failed');
+        setFingerprintStatus(`Error: ${error.message || 'Registration failed'}`);
       }
-      setTimeout(() => setFingerprintStatus(''), 2000);
+      
+      setTimeout(() => setFingerprintStatus(''), 3000);
     } finally {
       setFingerprintLoading(false);
     }
@@ -214,7 +238,7 @@ function AppContent() {
       
       if (response.ok) {
         alert('Device removed successfully');
-        fetchDevices(); // Refresh list
+        fetchDevices();
       }
     } catch (error) {
       console.error('Error removing device:', error);
@@ -233,7 +257,7 @@ function AppContent() {
     return (
       <>
         <Dashboard />
-        {/* Fingerprint Device Manager - appears at bottom right */}
+        {/* Fingerprint Device Manager */}
         <div className="fixed bottom-4 right-4 z-50">
           <button
             onClick={() => setShowDeviceManager(!showDeviceManager)}
@@ -370,7 +394,7 @@ function AppContent() {
             <span>{googleLoading ? 'Signing in...' : 'Google'}</span>
           </button>
 
-          {/* PURE FINGERPRINT LOGIN - Like banking apps (no email required) */}
+          {/* Fingerprint Login */}
           <button
             onClick={handleFingerprintLogin}
             disabled={fingerprintLoading}
@@ -399,12 +423,6 @@ function AppContent() {
                   {fingerprintStatus.includes('Verifying') && (
                     <Loader className="w-5 h-5 text-purple-600 animate-spin" />
                   )}
-                  {fingerprintStatus.includes('Preparing') && (
-                    <Loader className="w-5 h-5 text-purple-600 animate-spin" />
-                  )}
-                  {fingerprintStatus.includes('Checking') && (
-                    <Loader className="w-5 h-5 text-purple-600 animate-spin" />
-                  )}
                   <span className="text-sm font-medium">{fingerprintStatus}</span>
                 </div>
               </div>
@@ -429,7 +447,7 @@ function AppContent() {
           </button>
         </div>
 
-        {/* First-time Registration Modal - Like banking app setup */}
+        {/* First-time Registration Modal */}
         {showFingerprintModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className={`rounded-lg p-6 max-w-md w-full ${
@@ -454,7 +472,7 @@ function AppContent() {
               <div className="bg-purple-50 dark:bg-gray-700 p-4 rounded-lg mb-6">
                 <p className="text-sm text-purple-800 dark:text-purple-200">
                   <strong>🔒 Secure & Private:</strong> Your fingerprint never leaves your device. 
-                  We only store a encrypted mathematical representation.
+                  We only store an encrypted mathematical representation.
                 </p>
               </div>
               
@@ -491,14 +509,13 @@ function AppContent() {
           </div>
         )}
 
-        {/* Info Box - Banking app style */}
+        {/* Info Box */}
         <div className={`text-center p-4 rounded-lg mb-6 ${
           theme === 'dark' ? 'bg-gray-800' : 'bg-blue-50'
         }`}>
           <p className={theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}>
             <Fingerprint className="inline w-5 h-5 mr-2 text-purple-600" />
-            <strong>Like ABSA & TymeBank:</strong> Just tap the fingerprint icon to login - 
-            {!showFingerprintModal ? ' No email or password needed!' : ' Set up once, use forever!'}
+            <strong>Like ABSA & TymeBank:</strong> Just tap the fingerprint icon to login
           </p>
         </div>
 
